@@ -1,0 +1,78 @@
+name: binpicking_env
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  # ... (이전 내용과 동일)
+  # --- Web Framework & API ---
+  - fastapi=0.111.0
+  - uvicorn[standard]=0.29.0
+  - websockets=12.0
+  - httpx=0.27.0
+  - python-multipart
+  - jinja2 # HTML 템플릿 렌더링을 위해 추가
+
+  # ... (나머지 내용은 모두 동일)
+  # --- Data & Configuration ---
+  - pydantic=2.7.1
+  - pydantic-settings=2.2.1
+  - orjson
+
+  # --- Computer Vision & 3D Data ---
+  - numpy=1.26.4
+  - opencv=4.9.0
+  - open3d=0.18.0
+  - scikit-image=0.22.0
+  - pillow=10.3.0
+  - trimesh
+
+  # --- AI/ML Model Inference (CUDA 12.x 지원) ---
+  - pytorch=2.3.0
+  - torchvision=0.18.0
+  - torchaudio=2.3.0
+  - pytorch-cuda=12.1
+  # onnxruntime-gpu 는 pip 섹션으로 이동
+  - transformers
+  - timm
+
+  # --- Database (MSSQL) & Caching ---
+  - sqlalchemy=2.0.29
+  - pyodbc
+  - alembic
+  - redis-py
+
+  # --- Task Queue (Long-running background jobs) ---
+  - celery
+  - flower
+
+  # --- Robotics Communication ---
+  - roslibpy
+
+  # --- Data Analysis & Utilities ---
+  - pandas=2.2.2
+  - scipy=1.13.0
+  - loguru
+  - cachetools=5.3.3
+  - tqdm
+  - tenacity
+
+  # --- Interactive Development & Plotting ---
+  - jupyterlab
+  - ipykernel
+  - matplotlib-base
+  - seaborn-base
+
+  # --- Developer Tools & Code Quality (via Pip) ---
+  - pip:
+    - onnxruntime-gpu==1.17.1
+    - black
+    - ruff
+    - mypy
+    - pytest
+    - pytest-asyncio
+    - pytest-cov
+    - pre-commit
+    - python-jose[cryptography]
+    - passlib[bcrypt]
