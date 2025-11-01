@@ -12,7 +12,9 @@ from app.dependencies import (
     get_aruco_service, 
     get_streaming_service, 
     get_image_service,
-    get_frame_sync_service
+    get_frame_sync_service,
+    get_robot_service,
+    get_pointcloud_service
 )
 from app.core.logging import logger
 
@@ -26,15 +28,19 @@ async def lifespan(app: FastAPI):
     frame_sync_service = get_frame_sync_service()
     aruco_service = get_aruco_service()
     image_service = get_image_service()
+    robot_service = get_robot_service()
+    pointcloud_service = get_pointcloud_service()
     streaming_service = get_streaming_service()
 
     logger.info("Application startup: Starting background services...")
     
     # 각 서비스의 백그라운드 리스너/작업 시작
+    await robot_service.start()  # URDF 로드
     await camera_service.start()
     await frame_sync_service.start()
     await aruco_service.start()
     await image_service.start()
+    await pointcloud_service.start()
     streaming_service.start_listening()
     
     yield
@@ -45,6 +51,8 @@ async def lifespan(app: FastAPI):
     await frame_sync_service.stop()
     await aruco_service.stop()
     await image_service.stop()
+    await pointcloud_service.stop()
+    await robot_service.stop()
     streaming_service.stop_listening()
 
     logger.info("All background services have been signaled to stop.")

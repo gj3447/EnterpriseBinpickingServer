@@ -20,6 +20,12 @@ class FrameSyncService:
         self._latest_color: Optional[ColorImageReceivedPayload] = None
         self._latest_depth: Optional[DepthImageReceivedPayload] = None
         self._lock = asyncio.Lock()
+        
+        # 성능 측정용
+        self._synced_pairs = 0
+        self._color_received = 0
+        self._depth_received = 0
+        self._last_log_time = 0
 
     async def start(self):
         if self._is_running: return
@@ -36,15 +42,25 @@ class FrameSyncService:
         logger.info("FrameSyncService stopped.")
 
     async def handle_color_image(self, event_name: str, payload: ColorImageReceivedPayload):
+        self._color_received += 1
         payload_to_publish = None
         async with self._lock:
             self._latest_color = payload
             payload_to_publish = self._get_synced_payload_and_clear_state()
+            
+            # 성능 측정 카운터 리셋 (1초마다)
+            current_time = asyncio.get_event_loop().time()
+            if current_time - self._last_log_time >= 1.0:
+                self._synced_pairs = 0
+                self._color_received = 0
+                self._depth_received = 0
+                self._last_log_time = current_time
         
         if payload_to_publish:
             await self.event_bus.publish(EventType.SYNC_FRAME_READY.value, payload_to_publish)
 
     async def handle_depth_image(self, event_name: str, payload: DepthImageReceivedPayload):
+        self._depth_received += 1
         payload_to_publish = None
         async with self._lock:
             self._latest_depth = payload
@@ -70,7 +86,7 @@ class FrameSyncService:
                 depth_image_data=self._latest_depth.image_data
             )
             
-            logger.debug(f"Synced pair found. Publishing SYNC_FRAME_READY for ts:{sync_payload.timestamp:.3f}")
+            self._synced_pairs += 1
             
             # Clear state for next pair
             self._latest_color = None

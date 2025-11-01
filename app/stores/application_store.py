@@ -7,6 +7,8 @@ from app.stores.handlers.camera_handler import CameraHandler
 from app.stores.handlers.image_handler import ImageHandler
 from app.stores.handlers.aruco_handler import ArucoHandler
 from app.stores.handlers.event_handler import EventHandler
+from app.stores.handlers.robot_handler import RobotHandler
+from app.stores.handlers.pointcloud_handler import PointcloudHandler
 
 class ApplicationStore:
     """
@@ -22,6 +24,8 @@ class ApplicationStore:
         self.images = ImageHandler()      # Handles processed JPEG/transformed images
         self.aruco = ArucoHandler()
         self.events = EventHandler()
+        self.robot = RobotHandler()       # Handles robot URDF data
+        self.pointcloud = PointcloudHandler()  # Handles 3D pointcloud data
         logger.info("ApplicationStore initialized with all handlers.")
 
     def get_status(self) -> Dict[str, Any]:
@@ -35,5 +39,8 @@ class ApplicationStore:
             "processed_image_streams": self.images.get_all_images_status(),
             "calibration_data": self.calibration.get_data_with_timestamp(),
             "aruco_status": self.aruco.get_board_status(),
-            "event_timestamps": self.events.get_status()
+            "event_timestamps": self.events.get_status(),
+            "event_fps_summary": self.events.get_all_fps(),
+            "robot_status": self.robot.get_status(),
+            "pointcloud_status": self.pointcloud.get_statistics()
         }

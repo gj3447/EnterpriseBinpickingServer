@@ -10,7 +10,7 @@ from app.stores.application_store import ApplicationStore
 from app.websockets.connection_manager import ConnectionManager
 from app.schemas.events import (
     SystemTransformsUpdatePayload, WsColorImageUpdatePayload, WsDepthImageUpdatePayload,
-    WsDebugImageUpdatePayload, WsPerspectiveImageUpdatePayload
+    WsDebugImageUpdatePayload, WsPerspectiveImageUpdatePayload, WsPointcloudUpdatePayload
 )
 
 class StreamingService:
@@ -41,6 +41,7 @@ class StreamingService:
         await self.event_bus.subscribe(EventType.WS_DEPTH_IMAGE_UPDATE.value, self.handle_ws_depth_image_update)
         await self.event_bus.subscribe(EventType.WS_DEBUG_IMAGE_UPDATE.value, self.handle_ws_debug_image_update)
         await self.event_bus.subscribe(EventType.WS_PERSPECTIVE_IMAGE_UPDATE.value, self.handle_ws_perspective_image_update)
+        await self.event_bus.subscribe(EventType.WS_POINTCLOUD_UPDATE.value, self.handle_ws_pointcloud_update)
         await self.event_bus.subscribe(EventType.SYSTEM_TRANSFORMS_UPDATE.value, self.handle_system_transforms_update)
 
     def stop_listening(self):
@@ -55,6 +56,7 @@ class StreamingService:
         await self.event_bus.unsubscribe(EventType.WS_DEPTH_IMAGE_UPDATE.value, self.handle_ws_depth_image_update)
         await self.event_bus.unsubscribe(EventType.WS_DEBUG_IMAGE_UPDATE.value, self.handle_ws_debug_image_update)
         await self.event_bus.unsubscribe(EventType.WS_PERSPECTIVE_IMAGE_UPDATE.value, self.handle_ws_perspective_image_update)
+        await self.event_bus.unsubscribe(EventType.WS_POINTCLOUD_UPDATE.value, self.handle_ws_pointcloud_update)
         await self.event_bus.unsubscribe(EventType.SYSTEM_TRANSFORMS_UPDATE.value, self.handle_system_transforms_update)
 
     # --- Event Handlers ---
@@ -78,6 +80,13 @@ class StreamingService:
         stream_id = "board_perspective_jpg"
         if self.manager.has_subscribers(stream_id):
             await self.manager.broadcast_bytes(stream_id, payload.jpeg_data)
+    
+    async def handle_ws_pointcloud_update(self, event_name: str, payload: WsPointcloudUpdatePayload):
+        stream_id = "pointcloud"
+        if self.manager.has_subscribers(stream_id):
+            # 포인트클라우드 데이터는 JSON으로 전송
+            json_data = payload.model_dump_json()
+            await self.manager.broadcast_text(stream_id, json_data)
 
     async def handle_system_transforms_update(self, event_name: str, payload: SystemTransformsUpdatePayload):
         """Broadcasts transform snapshots to subscribers of each frame."""

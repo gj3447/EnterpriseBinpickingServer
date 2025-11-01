@@ -17,6 +17,40 @@
         
         const wsPath = `/ws/${streamId}`;
         const socket = new WebSocket(`ws://${window.location.host}${wsPath}`);
+        
+        // FPS calculation variables
+        let frameCount = 0;
+        let lastFpsTime = performance.now();
+        let currentFps = 0;
+
+        // Create FPS display
+        const fpsDisplay = document.createElement('div');
+        fpsDisplay.style.position = 'absolute';
+        fpsDisplay.style.top = '10px';
+        fpsDisplay.style.left = '10px';
+        fpsDisplay.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+        fpsDisplay.style.color = '#00ff00';
+        fpsDisplay.style.padding = '5px 10px';
+        fpsDisplay.style.fontFamily = 'monospace';
+        fpsDisplay.style.fontSize = '14px';
+        fpsDisplay.style.borderRadius = '3px';
+        fpsDisplay.style.zIndex = '1000';
+        document.body.appendChild(fpsDisplay);
+
+        // Update FPS display
+        function updateFpsDisplay() {
+            const now = performance.now();
+            const elapsed = now - lastFpsTime;
+            
+            if (elapsed >= 1000) {
+                currentFps = Math.round((frameCount * 1000) / elapsed);
+                fpsDisplay.textContent = `FPS: ${currentFps}`;
+                frameCount = 0;
+                lastFpsTime = now;
+            }
+        }
+
+        setInterval(updateFpsDisplay, 100);
 
         socket.onopen = () => {
             console.log(`WebSocket connected to ${wsPath}`);
@@ -30,12 +64,16 @@
                 const typedBlob = new Blob([event.data], { type: 'image/jpeg' });
                 const imageUrl = URL.createObjectURL(typedBlob);
                 imgElement.src = imageUrl;
+                
+                // Increment frame counter
+                frameCount++;
             }
         };
 
         socket.onclose = (event) => {
             console.log(`WebSocket disconnected from ${wsPath}: ${event.code}`);
             imgElement.src = ""; // Clear image on disconnect
+            fpsDisplay.textContent = 'FPS: 0 (Disconnected)';
         };
         
         socket.onerror = (error) => {

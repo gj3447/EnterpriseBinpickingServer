@@ -13,6 +13,10 @@ class EventType(Enum):
     COLOR_IMAGE_RECEIVED        = "COLOR_IMAGE_RECEIVED"        # 카메라에서 컬러 이미지 수신 (저수준)
     DEPTH_IMAGE_RECEIVED        = "DEPTH_IMAGE_RECEIVED"        # 카메라에서 깊이 이미지 수신 (저수준)
     
+    # JPEG 스트림 이벤트
+    COLOR_JPEG_RECEIVED         = "COLOR_JPEG_RECEIVED"         # 카메라에서 컬러 JPEG 수신
+    DEPTH_JPEG_RECEIVED         = "DEPTH_JPEG_RECEIVED"         # 카메라에서 깊이 JPEG 수신
+    
     SYNC_FRAME_READY            = "SYNC_FRAME_READY"            # 컬러/뎁스 프레임 쌍 동기화 완료 (고수준)
 
     ARUCO_UPDATE                = "ARUCO_UPDATE"                # ArUco 마커 감지 결과 업데이트 (내부용)
@@ -23,5 +27,6 @@ class EventType(Enum):
     WS_DEPTH_IMAGE_UPDATE       = "WS_DEPTH_IMAGE_UPDATE"       # 웹소켓: 뎁스 JPEG 준비 완료
     WS_DEBUG_IMAGE_UPDATE       = "WS_DEBUG_IMAGE_UPDATE"       # 웹소켓: ArUco 디버그 이미지 준비 완료
     WS_PERSPECTIVE_IMAGE_UPDATE = "WS_PERSPECTIVE_IMAGE_UPDATE" # 웹소켓: 원근 보정 이미지 준비 완료
+    WS_POINTCLOUD_UPDATE        = "WS_POINTCLOUD_UPDATE"        # 웹소켓: 포인트클라우드 데이터 준비 완료
     
     SYSTEM_TRANSFORMS_UPDATE    = "SYSTEM_TRANSFORMS_UPDATE"    # 웹소켓: 모든 좌표계 변환 정보 스냅샷 준비 완료

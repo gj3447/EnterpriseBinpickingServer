@@ -100,3 +100,109 @@ uvicorn app.main:app --host 0.0.0.0 --port 52000 --reload
 ├── API_DOCUMENTATION.md    # API 기능 정의서
 └── environment.yml         # Conda 환경 의존성 파일
 ```
+
+## 🔍 코드 분석 요약
+
+### 핵심 아키텍처 패턴
+
+1. **이벤트 주도 아키텍처 (Event-Driven Architecture)**
+   - `EventBus`가 중앙 메시지 브로커 역할
+   - 서비스 간 직접 호출 없이 이벤트 발행/구독으로 통신
+   - 주요 이벤트 타입: `COLOR_IMAGE_RECEIVED`, `DEPTH_IMAGE_RECEIVED`, `SYNC_FRAME_READY`, `ARUCO_UPDATE` 등
+
+2. **의존성 주입 (Dependency Injection)**
+   - `dependencies.py`에서 모든 서비스의 싱글톤 인스턴스 관리
+   - FastAPI의 `Depends`를 활용한 깔끔한 의존성 주입
+
+3. **계층적 서비스 구조**
+   - **기본 계층**: `ApplicationStore`, `EventBus`, `ConnectionManager`
+   - **서비스 계층**: `CameraService`, `ArucoService`, `ImageService`, `FrameSyncService`
+   - **스트리밍 계층**: `StreamingService` (WebSocket 브로드캐스팅)
+
+### 주요 컴포넌트 분석
+
+#### 1. ApplicationStore (중앙 상태 저장소)
+- 도메인별 핸들러로 상태 관리 분리
+  - `DeviceHandler`: 카메라 디바이스 상태
+  - `CalibrationHandler`: 카메라 캘리브레이션 데이터
+  - `CameraHandler`: 원본 BGR/Z16 이미지
+  - `ImageHandler`: 처리된 JPEG 이미지
+  - `ArucoHandler`: ArUco 마커 감지 결과
+  - `EventHandler`: 이벤트 발생 타임스탬프
+
+#### 2. 핵심 서비스들
+- **CameraService**: 
+  - 카메라 API와 WebSocket으로 실시간 이미지 수신
+  - 주기적 API 동기화로 카메라 상태 업데이트
+  
+- **FrameSyncService**: 
+  - 컬러/뎁스 이미지 타임스탬프 기반 동기화
+  - 150ms 허용 오차로 프레임 쌍 매칭
+  
+- **ArucoService**: 
+  - ArUco 보드 및 개별 마커 감지
+  - 3D 포즈 추정 및 좌표계 변환
+  - 카메라/보드/로봇 좌표계 간 변환 제공
+  
+- **ImageService**: 
+  - 이미지 인코딩 (BGR → JPEG)
+  - ArUco 디버그 이미지 생성
+  - 보드 원근 보정 이미지 생성
+
+#### 3. 실시간 스트리밍
+- **WebSocket 엔드포인트**:
+  - 이미지 스트림: `/ws/color_jpg`, `/ws/depth_jpg`, `/ws/aruco_debug_jpg`, `/ws/board_perspective_jpg`
+  - 좌표 변환 스트림: `/ws/transforms_camera`, `/ws/transforms_board`, `/ws/transforms_robot`
+  
+- **StreamingService**: 
+  - 이벤트 구독으로 실시간 데이터 수신
+  - ConnectionManager를 통해 연결된 클라이언트에 브로드캐스트
+
+### 데이터 플로우
+
+```
+카메라 WebSocket → CameraService → EventBus → FrameSyncService
+                                      ↓
+                                 동기화된 프레임
+                                      ↓
+                        ArucoService ← EventBus
+                              ↓
+                    좌표 변환 및 마커 감지
+                              ↓
+                    ImageService ← EventBus
+                              ↓
+                    이미지 처리 및 인코딩
+                              ↓
+                  StreamingService ← EventBus
+                              ↓
+                    WebSocket 클라이언트
+```
+
+### API 구조
+
+#### HTTP API (`/api/`)
+- `/api/health`: 서버 상태 확인
+- `/api/store`: 전체 애플리케이션 상태 조회
+- `/api/images`: 처리된 이미지 조회
+- `/api/aruco`: ArUco 감지 결과 조회
+- `/api/device`: 카메라 디바이스 정보
+- `/api/transforms`: 좌표계 변환 API (board, robot, camera, external_markers)
+- `/api/masks`: 마스크 관련 API (현재 미구현)
+- `/api/views/v1`: 웹 대시보드 뷰
+
+#### WebSocket API
+실시간 스트리밍을 위한 양방향 통신 채널 제공
+
+### 특징적인 구현
+
+1. **비동기 처리 최적화**
+   - 모든 서비스가 `asyncio` 기반 비동기 동작
+   - 이벤트 핸들러에서 짧은 락(lock) 유지로 병목 최소화
+
+2. **모듈화된 좌표 변환**
+   - 모든 객체(카메라, 보드, 로봇, 마커)를 3개 좌표계 기준으로 표현 가능
+   - 4x4 변환 행렬을 활용한 정확한 3D 변환
+
+3. **확장 가능한 이벤트 시스템**
+   - 새로운 서비스 추가 시 EventType만 정의하면 쉽게 통합 가능
+   - 느슨한 결합으로 서비스 간 독립성 보장

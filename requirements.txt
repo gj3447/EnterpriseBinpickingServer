@@ -1,0 +1,50 @@
+# 서버 핵심 패키지들
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+websockets==12.0
+httpx==0.27.0
+python-multipart
+jinja2
+
+# 데이터 검증 및 설정
+pydantic==2.7.1
+pydantic-settings==2.2.1
+orjson
+
+# 컴퓨터 비전 (Pinocchio 환경에 없을 수 있는 것들)
+opencv-python==4.9.0.80
+scikit-image==0.22.0
+pillow==10.3.0
+
+# 로깅 및 유틸리티
+loguru
+cachetools==5.3.3
+tqdm
+tenacity
+
+# URDF 파싱 (백업용)
+urdfpy
+trimesh
+
+# 데이터베이스 (MSSQL)
+sqlalchemy==2.0.29
+pyodbc
+alembic
+
+# 캐싱
+redis
+
+# 로봇 통신
+roslibpy
+
+# 개발 도구
+black
+ruff
+mypy
+pytest
+pytest-asyncio
+pytest-cov
+
+# 보안
+python-jose[cryptography]
+passlib[bcrypt]

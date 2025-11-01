@@ -1,0 +1,46 @@
+{
+    "dictionary": "DICT_4X4_250",
+    "marker_size_m": 0.05,
+    "board_config_file": "aruco_place.csv",
+    "temporal_filter": {
+        "enabled": true,
+        "board_alpha": 0.8,
+        "marker_alpha": 0.7,
+        "timeout_seconds": 1.0
+    },
+    "depth_sampling": {
+        "window_size_small": 3,
+        "window_size_large": 5,
+        "small_marker_threshold_m": 0.05,
+        "use_interior_sampling": true,
+        "interior_offset_ratio": 0.2,
+        "min_valid_samples": 3,
+        "quality_check": {
+            "enabled": true,
+            "max_relative_std": 0.05
+        }
+    },
+    "ransac": {
+        "enabled": true,
+        "inlier_threshold_m": 0.01,
+        "inlier_threshold_small_m": 0.005,
+        "max_iterations": 100,
+        "min_inlier_ratio": 0.6
+    },
+    "pose_estimation": {
+        "min_points_for_board": 6,
+        "use_ippe_for_markers": true,
+        "corner_refinement": "CORNER_REFINE_SUBPIX",
+        "hybrid_mode": {
+            "enabled": true,
+            "depth_weight": 0.7,
+            "min_depth_consistency": 0.8,
+            "scale_correction_threshold": 0.1,
+            "use_weighted_average": true
+        }
+    },
+    "debug": {
+        "log_metrics": false,
+        "log_filter_resets": false
+    }
+}

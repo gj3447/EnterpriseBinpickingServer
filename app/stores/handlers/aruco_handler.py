@@ -1,5 +1,5 @@
 import threading
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Set
 from datetime import datetime
 
 from app.schemas.aruco import Pose, ArucoDetectionResult, DetectedMarker
@@ -12,10 +12,21 @@ class ArucoHandler:
         self._board_markers: Dict[int, DetectedMarker] = {}
         self._external_markers: Dict[int, DetectedMarker] = {}
         self._robot_pose_on_board: Optional[Pose] = None
+        self._board_marker_ids: Set[int] = set()  # 보드에 속하는 마커 ID들
 
     def set_robot_pose(self, pose: Pose):
         with self._lock:
             self._robot_pose_on_board = pose
+            
+    def set_board_marker_ids(self, marker_ids: Set[int]):
+        """보드에 속하는 마커 ID들을 설정합니다."""
+        with self._lock:
+            self._board_marker_ids = marker_ids
+            
+    def get_board_marker_ids(self) -> Set[int]:
+        """보드에 속하는 마커 ID들을 반환합니다."""
+        with self._lock:
+            return self._board_marker_ids.copy()
             
     def update_detection_results(
         self,

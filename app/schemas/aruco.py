@@ -25,7 +25,7 @@ class DetectedMarker(BaseModel):
 
 class DetectedMarkerPose(BaseModel):
     """
-    탐지된 단일 ArUco 마커의 6D Pose 정보 (API 응답 전용).
+    탐지된 단일 ArUco 마커의 6D Pose 정API 응답 전용).
     """
     id: int
     pose: Pose

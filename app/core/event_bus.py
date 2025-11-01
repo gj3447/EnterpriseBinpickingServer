@@ -56,7 +56,7 @@ class EventBus:
             self._event_handler.update_event_timestamp(event_name)
 
         async with self._lock:
-            subscribers = self._subscribers.get(event_name, [])
+            subscribers = list(self._subscribers.get(event_name, []))
         
         if not subscribers:
             logger.trace(f"이벤트 '{event_name}'에 구독자가 없습니다")

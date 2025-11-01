@@ -17,10 +17,21 @@ def get_store_status(store: ApplicationStore = Depends(get_store)):
 @router.get("/events/status", summary="Get the status of all event publications")
 def get_event_status(store: ApplicationStore = Depends(get_store)):
     """
-    각 이벤트가 마지막으로 발행된 시간을 Unix 타임스탬프로 반환하여,
-    시스템의 이벤트 흐름을 모니터링합니다.
+    각 이벤트의 상세 정보를 반환합니다:
+    - 마지막 발행 시간 (ISO 8601 형식)
+    - 현재 FPS (초당 이벤트 수)
+    - 총 발행 횟수
+    - 윈도우 내 이벤트 수
     """
     return store.events.get_status()
+
+@router.get("/events/fps", summary="Get FPS for all events")
+def get_event_fps(store: ApplicationStore = Depends(get_store)):
+    """
+    모든 이벤트의 현재 FPS(초당 발행 횟수)를 간단한 딕셔너리 형태로 반환합니다.
+    성능 모니터링에 유용합니다.
+    """
+    return store.events.get_all_fps()
 
 
 @router.get(

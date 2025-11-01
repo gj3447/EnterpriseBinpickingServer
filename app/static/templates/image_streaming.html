@@ -105,15 +105,19 @@
                 this.streamId = streamId;
                 this.title = title;
                 this.lastUpdateTime = null;
+                this.frameCount = 0;
+                this.lastFpsTime = performance.now();
+                this.currentFps = 0;
                 this.createElement();
                 this.connect();
+                this.startFpsUpdate();
             }
 
             createElement() {
                 const box = document.createElement('div');
                 box.className = 'stream-box';
                 box.innerHTML = `
-                    <h3>${this.title}</h3>
+                    <h3>${this.title} <span id="fps-${this.streamId}" style="float: right; font-size: 14px; color: #2ecc71;">FPS: 0</span></h3>
                     <div class="image-container">
                         <img id="img-${this.streamId}" alt="${this.title} stream is offline">
                     </div>
@@ -130,6 +134,7 @@
                 this.statusLight = document.getElementById(`status-light-${this.streamId}`);
                 this.statusText = document.getElementById(`status-text-${this.streamId}`);
                 this.lastUpdateText = document.getElementById(`last-update-${this.streamId}`);
+                this.fpsElement = document.getElementById(`fps-${this.streamId}`);
             }
 
             connect() {
@@ -149,6 +154,9 @@
                         this.imgElement.src = URL.createObjectURL(typedBlob);
                         this.lastUpdateTime = new Date();
                         this.lastUpdateText.textContent = `Last update: ${this.lastUpdateTime.toLocaleTimeString()}`;
+                        
+                        // Increment frame counter
+                        this.frameCount++;
                     }
                 };
 
@@ -165,6 +173,20 @@
             updateStatus(text, color) {
                 this.statusText.textContent = text;
                 this.statusLight.style.backgroundColor = color;
+            }
+            
+            startFpsUpdate() {
+                setInterval(() => {
+                    const now = performance.now();
+                    const elapsed = now - this.lastFpsTime;
+                    
+                    if (elapsed >= 1000) {
+                        this.currentFps = Math.round((this.frameCount * 1000) / elapsed);
+                        this.fpsElement.textContent = `FPS: ${this.currentFps}`;
+                        this.frameCount = 0;
+                        this.lastFpsTime = now;
+                    }
+                }, 100);
             }
         }
 

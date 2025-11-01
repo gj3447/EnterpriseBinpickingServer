@@ -82,3 +82,13 @@ async def ws_transforms_robot(
 ):
     """'로봇' 좌표계를 기준으로 모든 객체의 Pose 정보를 구독합니다."""
     await _websocket_handler(websocket, "transforms_robot", manager)
+
+# --- Pointcloud Stream ---
+
+@router.websocket("/ws/pointcloud")
+async def ws_pointcloud(
+    websocket: WebSocket,
+    manager: ConnectionManager = Depends(get_connection_manager)
+):
+    """실시간 3D 포인트클라우드 데이터를 구독합니다."""
+    await _websocket_handler(websocket, "pointcloud", manager)

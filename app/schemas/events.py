@@ -26,6 +26,15 @@ class DepthImageReceivedPayload(EventPayload):
     """Payload for DEPTH_IMAGE_RECEIVED event."""
     image_data: np.ndarray
 
+# --- JPEG Stream Events ---
+class ColorJpegReceivedPayload(EventPayload):
+    """Payload for COLOR_JPEG_RECEIVED event."""
+    jpeg_data: bytes
+
+class DepthJpegReceivedPayload(EventPayload):
+    """Payload for DEPTH_JPEG_RECEIVED event."""
+    jpeg_data: bytes
+
 # --- High-level Synchronized Event ---
 class SyncFrameReadyPayload(EventPayload):
     """
@@ -68,3 +77,8 @@ class SystemTransformsUpdatePayload(EventPayload):
     of all transformations for each coordinate frame, formatted for external clients.
     """
     snapshots: List[SystemTransformSnapshotResponse]
+
+class WsPointcloudUpdatePayload(EventPayload):
+    """Payload for WS_POINTCLOUD_UPDATE event."""
+    points: List[List[float]]  # List of [x, y, z] coordinates
+    colors: Optional[List[List[int]]] = None  # Optional list of [r, g, b] values

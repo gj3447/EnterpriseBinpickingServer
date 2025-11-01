@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -8,6 +8,7 @@ from app.schemas.camera import CameraCalibration
 from app.schemas.aruco import Pose, DetectedMarker
 from app.schemas.events import (
     ColorImageReceivedPayload, DepthImageReceivedPayload, ArucoUpdatePayload,
+    ColorJpegReceivedPayload, DepthJpegReceivedPayload,
     WsColorImageUpdatePayload, WsDepthImageUpdatePayload,
     WsDebugImageUpdatePayload, WsPerspectiveImageUpdatePayload
 )
@@ -26,43 +27,73 @@ class ImageService:
         self.store = store
         self.event_bus = event_bus
         self._is_running = False
+        # 최신 프레임만 처리하기 위한 간단한 coalesce 버퍼와 처리 상태
+        self._latest_images: Dict[str, Optional[Tuple[np.ndarray, float]]] = {"color_raw": None, "depth_raw": None}
+        self._processing_streams: set[str] = set()
 
     async def start(self):
         """서비스를 시작하고 이벤트 구독을 등록합니다."""
         if self._is_running:
             return
         self._is_running = True
+        
+        # Raw 이미지 이벤트 구독
         await self.event_bus.subscribe(EventType.COLOR_IMAGE_RECEIVED.value, self.handle_color_image)
         await self.event_bus.subscribe(EventType.DEPTH_IMAGE_RECEIVED.value, self.handle_depth_image)
+        
+        # JPEG 이미지 이벤트 구독 (설정에 따라)
+        if settings.COLOR_STREAM_MODE == "jpeg":
+            await self.event_bus.subscribe(EventType.COLOR_JPEG_RECEIVED.value, self.handle_color_jpeg)
+        if settings.DEPTH_STREAM_MODE == "jpeg":
+            await self.event_bus.subscribe(EventType.DEPTH_JPEG_RECEIVED.value, self.handle_depth_jpeg)
+            
         await self.event_bus.subscribe(EventType.ARUCO_UPDATE.value, self.handle_aruco_update)
-        logger.info("ImageService started and subscribed to events.")
+        logger.info(f"ImageService started - Color: {settings.COLOR_STREAM_MODE}, Depth: {settings.DEPTH_STREAM_MODE}")
 
     async def stop(self):
         """서비스를 중지하고 이벤트 구독을 해제합니다."""
         if not self._is_running:
             return
         self._is_running = False
+        
+        # Raw 이미지 이벤트 구독 해제
         await self.event_bus.unsubscribe(EventType.COLOR_IMAGE_RECEIVED.value, self.handle_color_image)
         await self.event_bus.unsubscribe(EventType.DEPTH_IMAGE_RECEIVED.value, self.handle_depth_image)
+        
+        # JPEG 이미지 이벤트 구독 해제 (설정에 따라)
+        if settings.COLOR_STREAM_MODE == "jpeg":
+            await self.event_bus.unsubscribe(EventType.COLOR_JPEG_RECEIVED.value, self.handle_color_jpeg)
+        if settings.DEPTH_STREAM_MODE == "jpeg":
+            await self.event_bus.unsubscribe(EventType.DEPTH_JPEG_RECEIVED.value, self.handle_depth_jpeg)
+            
         await self.event_bus.unsubscribe(EventType.ARUCO_UPDATE.value, self.handle_aruco_update)
         logger.info("ImageService stopped and unsubscribed from events.")
 
     async def handle_color_image(self, event_name: str, payload: ColorImageReceivedPayload):
         """COLOR_IMAGE_RECEIVED 이벤트를 처리하여 JPEG으로 변환합니다."""
         try:
-            await self._process_and_publish_jpeg(payload.image_data, payload.timestamp, "color_raw")
+            # 최신 프레임만 유지하고 처리 루프가 없으면 시작
+            self._latest_images["color_raw"] = (payload.image_data, payload.timestamp)
+            if "color_raw" not in self._processing_streams:
+                self._processing_streams.add("color_raw")
+                asyncio.create_task(self._process_image_loop("color_raw"))
         except Exception as e:
             logger.error(f"Error in handle_color_image: {e}", exc_info=True)
 
     async def handle_depth_image(self, event_name: str, payload: DepthImageReceivedPayload):
         """DEPTH_IMAGE_RECEIVED 이벤트를 처리하여 JPEG으로 변환합니다."""
         try:
-            await self._process_and_publish_jpeg(payload.image_data, payload.timestamp, "depth_raw")
+            # 최신 프레임만 유지하고 처리 루프가 없으면 시작
+            self._latest_images["depth_raw"] = (payload.image_data, payload.timestamp)
+            if "depth_raw" not in self._processing_streams:
+                self._processing_streams.add("depth_raw")
+                asyncio.create_task(self._process_image_loop("depth_raw"))
         except Exception as e:
             logger.error(f"Error in handle_depth_image: {e}", exc_info=True)
             
     async def _process_and_publish_jpeg(self, image_data: np.ndarray, timestamp: float, stream_id: str):
-        jpeg_data = self.get_image_as_jpeg(image_data, stream_id)
+        # CPU 바운드(JPEG 인코딩)를 이벤트 루프 밖으로 오프로딩
+        jpeg_data = await asyncio.to_thread(self.get_image_as_jpeg, image_data, stream_id)
         if not jpeg_data:
             return
 
@@ -77,7 +108,83 @@ class ImageService:
             await self.event_bus.publish(EventType.WS_DEPTH_IMAGE_UPDATE.value, payload)
         
         logger.debug(f"Successfully converted and stored {stream_id} as JPEG.")
+
+    async def _process_image_loop(self, stream_id: str):
+        """각 스트림별 최신 프레임만 처리하는 루프."""
+        try:
+            while True:
+                snapshot = self._latest_images.get(stream_id)
+                # 읽은 즉시 비워서 다음 주기 동안 최신값만 남도록 함
+                self._latest_images[stream_id] = None
+                if not snapshot:
+                    break
+                image_data, timestamp = snapshot
+                try:
+                    await self._process_and_publish_jpeg(image_data, timestamp, stream_id)
+                except Exception as e:
+                    logger.error(f"Error while processing {stream_id} frame: {e}", exc_info=True)
+        finally:
+            self._processing_streams.discard(stream_id)
+            # 종료 직후 새 프레임이 들어온 경우 재기동
+            if self._latest_images.get(stream_id) is not None and stream_id not in self._processing_streams:
+                self._processing_streams.add(stream_id)
+                asyncio.create_task(self._process_image_loop(stream_id))
         
+    async def handle_color_jpeg(self, event_name: str, payload: ColorJpegReceivedPayload):
+        """COLOR_JPEG_RECEIVED 이벤트를 처리하여 BGR로 디코딩합니다."""
+        try:
+            # JPEG를 BGR로 디코딩 (CPU 바운드 작업이므로 스레드로 오프로딩)
+            bgr_image = await asyncio.to_thread(self._decode_jpeg_to_bgr, payload.jpeg_data)
+            if bgr_image is not None:
+                # Store에 raw 이미지 저장
+                self.store.camera_raw.update_color_image(bgr_image, payload.timestamp)
+                # Raw 이미지 이벤트 발행 (ArUco 등이 처리할 수 있도록)
+                raw_payload = ColorImageReceivedPayload(timestamp=payload.timestamp, image_data=bgr_image)
+                await self.event_bus.publish(EventType.COLOR_IMAGE_RECEIVED.value, raw_payload)
+        except Exception as e:
+            logger.error(f"Error in handle_color_jpeg: {e}", exc_info=True)
+    
+    async def handle_depth_jpeg(self, event_name: str, payload: DepthJpegReceivedPayload):
+        """DEPTH_JPEG_RECEIVED 이벤트를 처리하여 Z16으로 디코딩합니다."""
+        try:
+            # JPEG를 Z16으로 디코딩 (CPU 바운드 작업이므로 스레드로 오프로딩)
+            z16_image = await asyncio.to_thread(self._decode_jpeg_to_z16, payload.jpeg_data)
+            if z16_image is not None:
+                # Store에 raw 이미지 저장
+                self.store.camera_raw.update_depth_image(z16_image, payload.timestamp)
+                # Raw 이미지 이벤트 발행 (ArUco 등이 처리할 수 있도록)
+                raw_payload = DepthImageReceivedPayload(timestamp=payload.timestamp, image_data=z16_image)
+                await self.event_bus.publish(EventType.DEPTH_IMAGE_RECEIVED.value, raw_payload)
+        except Exception as e:
+            logger.error(f"Error in handle_depth_jpeg: {e}", exc_info=True)
+    
+    def _decode_jpeg_to_bgr(self, jpeg_data: bytes) -> Optional[np.ndarray]:
+        """JPEG 바이트를 BGR numpy 배열로 디코딩합니다."""
+        try:
+            # JPEG 바이트를 numpy 배열로 변환
+            nparr = np.frombuffer(jpeg_data, np.uint8)
+            # OpenCV로 디코딩 (BGR 형식)
+            bgr_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            return bgr_image
+        except Exception as e:
+            logger.error(f"Failed to decode JPEG to BGR: {e}")
+            return None
+    
+    def _decode_jpeg_to_z16(self, jpeg_data: bytes) -> Optional[np.ndarray]:
+        """JPEG 바이트를 Z16 (uint16) numpy 배열로 디코딩합니다."""
+        try:
+            # JPEG 바이트를 numpy 배열로 변환
+            nparr = np.frombuffer(jpeg_data, np.uint8)
+            # OpenCV로 디코딩 (16비트 깊이)
+            depth_image = cv2.imdecode(nparr, cv2.IMREAD_ANYDEPTH)
+            # uint16으로 변환 (Z16 형식)
+            if depth_image.dtype != np.uint16:
+                depth_image = depth_image.astype(np.uint16)
+            return depth_image
+        except Exception as e:
+            logger.error(f"Failed to decode JPEG to Z16: {e}")
+            return None
+
     async def handle_aruco_update(self, event_name: str, payload: ArucoUpdatePayload):
         """ARUCO_UPDATE 이벤트를 처리하여 디버그 및 원근 보정 이미지를 생성하고 저장합니다."""
         try:
@@ -88,17 +195,21 @@ class ImageService:
                 logger.warning("Missing calibration data for generating images from aruco update.")
                 return
 
-            # 1. ArUco 디버그 이미지 생성 및 발행 준비
-            debug_image_jpeg = self.get_aruco_debug_image_as_jpeg(image, payload, calibration)
+            # 1. ArUco 디버그 이미지 생성 및 발행 준비 (CPU 바운드 오프로딩)
+            # 스토어 접근은 이벤트 루프 스레드에서 수행 후 값만 워커 스레드로 전달
+            robot_pose_board = self.store.aruco.get_robot_pose_on_board()
+            debug_image_jpeg = await asyncio.to_thread(
+                self.get_aruco_debug_image_as_jpeg, image, payload, calibration, robot_pose_board
+            )
             if debug_image_jpeg:
                 self.store.images.update_aruco_debug_image(debug_image_jpeg, payload.timestamp)
                 ws_payload = WsDebugImageUpdatePayload(timestamp=payload.timestamp, jpeg_data=debug_image_jpeg)
                 await self.event_bus.publish(EventType.WS_DEBUG_IMAGE_UPDATE.value, ws_payload)
                 logger.debug("Successfully generated and stored 'aruco_debug_jpg'.")
 
-            # 2. ArUco 보드 기준 원근 보정 이미지 생성 및 발행 준비
+            # 2. ArUco 보드 기준 원근 보정 이미지 생성 및 발행 준비 (CPU 바운드 오프로딩)
             if payload.board_pose:
-                perspective_jpeg = self.get_board_perspective_corrected_image_as_jpeg(image, payload.board_pose, calibration)
+                perspective_jpeg = await asyncio.to_thread(self.get_board_perspective_corrected_image_as_jpeg, image, payload.board_pose, calibration)
                 if perspective_jpeg:
                     self.store.images.update_board_perspective_image(perspective_jpeg, payload.timestamp)
                     ws_payload = WsPerspectiveImageUpdatePayload(timestamp=payload.timestamp, jpeg_data=perspective_jpeg)
@@ -147,6 +258,8 @@ class ImageService:
         tvec = np.array(board_pose.translation)
         
         src_points, _ = cv2.projectPoints(board_corners_3d, rvec, tvec, cam_matrix, dist_coeffs)
+        # getPerspectiveTransform은 (4,2) float32 입력을 기대하므로 형상 명시
+        src_points = src_points.reshape(-1, 2).astype(np.float32)
         aspect_ratio = settings.BOARD_HEIGHT_M / settings.BOARD_WIDTH_M
         height_px = int(width_px * aspect_ratio)
         dst_points = np.array([[0, 0], [width_px - 1, 0], [width_px - 1, height_px - 1], [0, height_px - 1]], dtype=np.float32)
@@ -192,12 +305,15 @@ class ImageService:
         success, jpeg_image = cv2.imencode(".jpg", mask)
         return jpeg_image.tobytes() if success else None
 
-    def get_aruco_debug_image_as_jpeg(self, image: np.ndarray, aruco_payload: ArucoUpdatePayload, calibration: CameraCalibration) -> Optional[bytes]:
+    def get_aruco_debug_image_as_jpeg(
+        self,
+        image: np.ndarray,
+        aruco_payload: ArucoUpdatePayload,
+        calibration: CameraCalibration,
+        robot_pose_board: Optional[Pose] = None,
+    ) -> Optional[bytes]:
         debug_image = image.copy()
         board_pose = aruco_payload.board_pose
-        
-        # Aruco 서비스에서 robot_pose를 직접 가져오지 않고, store를 통해 최신 상태를 참조합니다.
-        robot_pose_board = self.store.aruco.get_robot_pose_on_board()
         
         if board_pose and calibration:
             intrinsics = calibration.color_intrinsics

@@ -1,0 +1,55 @@
+name: binpicking_pinocchio
+channels:
+  - conda-forge
+  - defaults
+  - pytorch
+  - nvidia
+
+dependencies:
+  # Python and core
+  - python=3.10
+  - pip
+  
+  # Pinocchio and robotics
+  - pinocchio
+  - eigenpy
+  - hpp-fcl
+  - urdfpy
+  
+  # Scientific computing (compatible versions)
+  - numpy
+  - scipy
+  - matplotlib
+  
+  # Computer vision and 3D
+  - opencv
+  - open3d
+  
+  # Web framework
+  - fastapi
+  - uvicorn
+  - websockets
+  - jinja2
+  
+  # Data validation and serialization
+  - pydantic
+  - pydantic-settings
+  
+  # Logging and utilities
+  - loguru
+  - cachetools
+  
+  # Development tools
+  - black
+  - ruff
+  - mypy
+  
+  # Additional pip packages
+  - pip:
+    - pyrender
+    - trimesh
+    - networkx==2.8  # compatible with scikit-image
+    
+# Environment variables
+variables:
+  PYTHONPATH: ${CONDA_PREFIX}/lib/python3.10/site-packages
