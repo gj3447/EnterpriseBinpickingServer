@@ -22,6 +22,8 @@
      - `pin.log`로 오차 계산 후 최소제곱(`np.linalg.lstsq`)으로 `dq` 산출 → `pin.integrate`
      - 관절 한계 체크: `model.lowerPositionLimit`, `upperPositionLimit`
      - Pose × 그리퍼 offset 조합 반복 → 최적 해 선택 및 전체 결과 목록 반환
+     - **프리스매틱 조인트가 존재하면서 길이를 외부에서 고정하고 싶다면** 해당 관절 index를 찾아 `q[index]=L`로 초기화하고, 반복 중에도 `dq[index]=0` 또는 Jacobian에서 해당 열을 제거해 관절 업데이트를 막는다.
+     - **URDF에 프리스매틱 조인트가 없고 길이를 후보로 시험하고 싶다면** 목표 pose에 `pin.SE3(I, [0,0,L])` 같은 오프셋을 곱해 여러 길이를 순회한다.
    - 출력: 최적 joint 벡터, 잔류 오차, 반복 횟수, 선택된 Pose/offset, 후보별 상세 리스트
 2. 예외 관리
    - Pinocchio 미로딩, 프레임 ID 미지정, 수렴 실패 등은 `RobotServiceError`(새로운 예외 클래스)로 감싸기
