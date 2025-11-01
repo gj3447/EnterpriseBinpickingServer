@@ -45,11 +45,16 @@
 1. `app/api/v1/endpoints/robot.py`
    - 기존 GET `/status`, `/urdf` 응답을 Pinocchio 기반 데이터에 맞춰 재구성 (`store.robot.get_urdf_object()` 딕셔너리 대응)
    - POST `/api/device/robot/ik` 추가
-   - 요청: 목표 pose(회전+위치), 초기 상태, 후보 그리퍼 길이 등
-   - 응답: joint 벡터, 오차 norm, 사용된 그리퍼 길이
+   - 요청: 목표 pose(회전+위치), 초기 상태, 후보 그리퍼 길이, `mode`(fixed/prismatic/auto), `coordinate_mode` (기준 좌표계 선택)
+   - 응답: joint 벡터, 오차 norm, 사용된 그리퍼 길이, 실제 적용된 mode, 좌표계 정보, 후보별 결과 리스트
 2. 검증 및 예외 처리
    - 로봇 모델 미로딩, Pinocchio 미설치, 수렴 실패 등
 3. 필요 시 스웨거 문서 및 README 업데이트
+
+### 3.4 좌표계 변환 옵션
+1. 기본 베이스 좌표계(Z-up)를 기준으로 IK를 수행하되, API 파라미터로 사용자 정의 축을 지정 가능하게 설계
+2. `coordinate_mode` 값에 따라 회전 행렬을 생성하고, 목표 pose 또는 결과 pose에 변환 적용
+3. 잘못된 축 조합/중복 입력 시 명확한 오류 메시지 반환
 
 ## 4. 테스트 계획
 - 단위 테스트: IK 함수에 대해 알려진 포즈 → Expected joint 비교

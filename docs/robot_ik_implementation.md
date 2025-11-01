@@ -34,14 +34,15 @@
    - `robot_object`가 dict 인지 확인 후 `robot_name`, `dof`, `joint_names`, `joint_limits` 등 반환
 2. POST `/api/device/robot/ik` 추가
    - 요청 모델에 `mode` 필드 추가 (`"fixed"`, `"prismatic"`, `"auto"` 등)
-   - `robot_service.solve_ik` 호출 시, `mode`와 현재 URDF 상태(`has_gripper_joint`)를 함께 전달
-   - 응답에는 joint 벡터, 잔류 오차, 반복 횟수와 함께 최종 선택된 `pose_index`/`grip_offset`/`mode`를 포함
+   - `robot_service.solve_ik` 호출 시, `mode`, 현재 URDF 상태(`has_gripper_joint`), `coordinate_mode`(예: `"base"`, `"custom"`)를 함께 전달
+   - `coordinate_mode`가 `custom`이면 요청에 포함된 축 정의(예: `up_axis`, `forward_axis`)를 이용해 회전 행렬을 생성하고 pose를 변환한 뒤 IK 수행
+   - 응답에는 joint 벡터, 잔류 오차, 반복 횟수와 함께 최종 선택된 `pose_index`/`grip_offset`/`mode`/`coordinate_mode`를 포함
    - 수렴 실패/모델 부재 시 HTTP 400/404 예외 처리
 
 ## 4. Pydantic 스키마 (`app/schemas/aruco.py` 또는 신규 파일)
 1. HTTP 요청/응답 모델 정의
-   - Pose 입력: 위치(float[3]) + 회전(quaternion or RPY), `mode`, `grip_offsets`
-   - IK 응답: joint 배열, error, iterations, 선택된 pose index, grip offset, 후보 리스트, 실제 사용된 `mode`
+   - Pose 입력: 위치(float[3]) + 회전(quaternion or RPY), `mode`, `grip_offsets`, `coordinate_mode`, `custom_axes`(선택)
+   - IK 응답: joint 배열, error, iterations, 선택된 pose index, grip offset, 후보 리스트, 실제 사용된 `mode`, `coordinate_mode`
 
 ## 5. 서비스 wiring
 - `app/dependencies.py`는 이미 싱글턴 인스턴스를 제공하므로 별도 수정 불필요
