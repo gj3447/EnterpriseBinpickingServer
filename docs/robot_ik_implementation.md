@@ -7,11 +7,12 @@
 - `settings.ROBOT_URDF_PATH`가 로드 가능한 URDF 파일을 가리키는지 확인
 - `RobotService`가 서버 기동 시 정상적으로 URDF를 로드하는지 로그 확인
 
-## 1. URDF (선택)
-1. 가변 그리퍼가 필요 없다면 이 단계는 생략 가능
-2. 필요할 경우 `app/static/urdf/...` 하위 URDF를 복사 → 프리스매틱 조인트 추가 → `.env`에서 경로 지정
-   - 예: `ROBOT_URDF_PATH=app/static/urdf/dsr_description2/urdf/a0509_var_grip.urdf`
-3. 서버 재시작 후 `RobotService` 로드 로그와 `/api/device/robot/status`에서 `loaded=True` 확인
+## 1. URDF 전략
+1. 기본 URDF(그리퍼 고정)와 프리스매틱 조인트가 포함된 URDF 두 버전을 준비
+   - `.env`의 `ROBOT_URDF_PATH`로 어느 버전을 로드할지 선택하도록 구성
+   - 예: `ROBOT_URDF_PATH=app/static/urdf/dsr_description2/urdf/a0509.urdf` (고정), `.../a0509_var_grip.urdf` (프리스매틱)
+2. 서버 기동 시 `RobotService`가 선택된 URDF를 Pinocchio로 로드하고, 모델 객체에 `has_gripper_joint` 플래그를 기록 (존재 여부 판별)
+3. `/api/device/robot/status`에서 `loaded=True`를 확인하고, 필요 시 현재 URDF 버전을 응답에 포함
 
 ## 2. RobotService 확장 (`app/services/robot_service.py`)
 1. Pinocchio 모델을 가져와 IK를 수행하는 `solve_ik(...)` 메서드 추가
@@ -32,18 +33,19 @@
 1. 기존 GET `/urdf` 엔드포인트를 Pinocchio 딕셔너리 구조에 맞게 수정
    - `robot_object`가 dict 인지 확인 후 `robot_name`, `dof`, `joint_names`, `joint_limits` 등 반환
 2. POST `/api/device/robot/ik` 추가
-   - `RobotIkRequest` Pydantic 모델 정의 (목표 pose 리스트, 초기 q, grip_offsets 등)
-   - `robot_service.solve_ik` 호출 → 성공 시 joint 벡터와 메타데이터 반환
+   - 요청 모델에 `mode` 필드 추가 (`"fixed"`, `"prismatic"`, `"auto"` 등)
+   - `robot_service.solve_ik` 호출 시, `mode`와 현재 URDF 상태(`has_gripper_joint`)를 함께 전달
+   - 응답에는 joint 벡터, 잔류 오차, 반복 횟수와 함께 최종 선택된 `pose_index`/`grip_offset`/`mode`를 포함
    - 수렴 실패/모델 부재 시 HTTP 400/404 예외 처리
 
 ## 4. Pydantic 스키마 (`app/schemas/aruco.py` 또는 신규 파일)
 1. HTTP 요청/응답 모델 정의
-   - Pose 입력: 위치(float[3]) + 회전(quaternion or RPY)
-   - IK 응답: joint 배열, error, iterations, 선택된 pose index, grip offset, 후보 리스트
+   - Pose 입력: 위치(float[3]) + 회전(quaternion or RPY), `mode`, `grip_offsets`
+   - IK 응답: joint 배열, error, iterations, 선택된 pose index, grip offset, 후보 리스트, 실제 사용된 `mode`
 
 ## 5. 서비스 wiring
 - `app/dependencies.py`는 이미 싱글턴 인스턴스를 제공하므로 별도 수정 불필요
-- 단, 새 예외나 설정 값이 필요하면 `app/core/config.py`에 추가
+- 단, 새 예외나 설정 값(예: IK 기본 모드, 기본 grip offset) 필요 시 `app/core/config.py`에 추가
 
 ## 6. 테스트
 1. 단위 테스트(`tests/`)
