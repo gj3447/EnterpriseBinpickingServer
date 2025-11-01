@@ -8,8 +8,9 @@
 ## 2. 현재 구조 요약
 - `RobotService`가 URDF를 Pinocchio 모델로 로드하고 `ApplicationStore`에 저장
 - `/api/device/robot/pinocchio`로 모델 정보 확인 가능
+- 기존 `app/api/v1/endpoints/robot.py`는 urdfpy/XML 기반 응답을 가정하므로 Pinocchio 딕셔너리 구조에 맞춰 업데이트 필요
 - IK 계산 로직은 아직 서비스/엔드포인트로 구현되지 않음
-- 그리퍼 길이 가변성은 URDF 수정 여부에 따라 두 가지 접근이 존재
+- 그리퍼 길이 가변성은 URDF 수정 여부에 따라 두 가지 접근이 존재 (URDF는 아직 수정되지 않음)
 
 ## 3. 구현 단계
 
@@ -41,7 +42,9 @@
    - URDF 변경이 어려울 때: IK 실행 전 목표 pose에 가상 오프셋 적용(그리퍼 길이 후보)
 
 ### 3.3 API/사용자 인터페이스
-1. `app/api/v1/endpoints/robot.py`에 POST `/api/device/robot/ik`
+1. `app/api/v1/endpoints/robot.py`
+   - 기존 GET `/status`, `/urdf` 응답을 Pinocchio 기반 데이터에 맞춰 재구성 (`store.robot.get_urdf_object()` 딕셔너리 대응)
+   - POST `/api/device/robot/ik` 추가
    - 요청: 목표 pose(회전+위치), 초기 상태, 후보 그리퍼 길이 등
    - 응답: joint 벡터, 오차 norm, 사용된 그리퍼 길이
 2. 검증 및 예외 처리
