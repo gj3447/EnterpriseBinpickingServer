@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any
 
-from app.services.robot_service import RobotService
 from app.dependencies import get_robot_service
-from app.core.logging import logger
+from app.schemas.robot import RobotIkRequest, RobotIkResponse
+from app.services.robot_service import RobotService, RobotServiceError
 
 router = APIRouter()
 
@@ -18,30 +18,34 @@ def get_robot_status(
 def get_robot_urdf_info(
     robot_service: RobotService = Depends(get_robot_service)
 ):
-    """로봇 URDF 객체의 정보를 조회합니다."""
+    """Pinocchio 로드 결과를 기반으로 URDF 정보를 반환합니다."""
     urdf_object = robot_service.get_robot_object()
     if urdf_object is None:
         raise HTTPException(status_code=404, detail="URDF not loaded")
-    
-    # 객체 타입에 따라 다른 정보 반환
-    response = {
-        "object_type": type(urdf_object).__name__,
-        "available": True
+
+    if not isinstance(urdf_object, dict) or urdf_object.get("library") != "pinocchio":
+        raise HTTPException(status_code=400, detail="URDF is not managed by Pinocchio model.")
+
+    metadata = robot_service.get_metadata()
+
+    return {
+        "robot_name": urdf_object.get("robot_name"),
+        "library": urdf_object.get("library"),
+        "dof": urdf_object.get("dof"),
+        "joint_names": urdf_object.get("joint_names", []),
+        "joint_limits": urdf_object.get("joint_limits", {}),
+        "urdf_path": urdf_object.get("urdf_path"),
+        "has_gripper_joint": metadata.get("has_gripper_joint", False),
+        "gripper_joint_name": metadata.get("gripper_joint_name"),
     }
-    
-    # urdfpy 객체인 경우
-    if hasattr(urdf_object, 'name'):
-        response["robot_name"] = urdf_object.name
-    if hasattr(urdf_object, 'links'):
-        response["num_links"] = len(urdf_object.links)
-    if hasattr(urdf_object, 'joints'):
-        response["num_joints"] = len(urdf_object.joints)
-        response["joint_names"] = [j.name for j in urdf_object.joints]
-    
-    # XML ElementTree인 경우
-    elif hasattr(urdf_object, 'getroot'):
-        root = urdf_object.getroot()
-        response["robot_name"] = root.get('name', 'unknown')
-        response["xml_available"] = True
-    
-    return response
+
+
+@router.post("/ik", response_model=RobotIkResponse)
+async def solve_robot_ik(
+    request: RobotIkRequest,
+    robot_service: RobotService = Depends(get_robot_service),
+):
+    try:
+        return await robot_service.solve_ik(request)
+    except RobotServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

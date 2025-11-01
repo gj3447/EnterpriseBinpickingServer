@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, computed_field
 from pathlib import Path
+from typing import Optional
 
 env_path = Path(".") / "config" / ".env"
 
@@ -11,6 +12,15 @@ class AppSettings(BaseSettings):
     # --- Camera Settings ---
     CAMERA_API_BASE_URL: str = "192.168.0.197:51000"
     API_SYNC_INTERVAL_SECONDS: int = 300
+    CAMERA_WS_CONNECT_TIMEOUT_SECONDS: float = Field(10.0, description="카메라 WebSocket 연결 타임아웃 (초)")
+    CAMERA_WS_RECV_TIMEOUT_SECONDS: float = Field(3.0, description="카메라 WebSocket 수신 타임아웃 (초)")
+    CAMERA_WS_RECONNECT_DELAY_SECONDS: float = Field(5.0, description="재연결 시도 간격 (초)")
+    CAMERA_WS_PING_INTERVAL_SECONDS: Optional[float] = Field(20.0, description="ping 프레임 전송 주기 (초, 0 또는 음수면 비활성화)")
+    CAMERA_WS_PING_TIMEOUT_SECONDS: Optional[float] = Field(20.0, description="ping 응답 대기 타임아웃 (초)")
+    CAMERA_WS_CLOSE_TIMEOUT_SECONDS: float = Field(5.0, description="연결 종료 시 대기 시간 (초)")
+
+    # --- Robot / IK Settings ---
+    GRIPPER_JOINT_NAME: Optional[str] = Field(default=None, description="프리스매틱 그리퍼 관절 이름 (없으면 None)")
     
     # --- Stream Mode Settings ---
     COLOR_STREAM_MODE: str = Field("jpeg", description="Color 스트림 모드: 'jpeg' 또는 'raw'")
