@@ -4,205 +4,225 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-green.svg)](https://fastapi.tiangolo.com/)
 [![Code Style: Black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-실시간 3D 비전 데이터를 처리하고, ArUco 마커 기반의 정밀한 좌표 변환을 수행하여 로보틱스 애플리케이션에 필요한 데이터를 제공하는 고성능 백엔드 서버입니다.
+실시간 3D 비전 스트림과 ArUco 기반 좌표계 추정을 통합해 로봇 픽킹(비전-로봇) 시나리오를 지원하는 고성능 FastAPI 백엔드입니다. 카메라·로봇 하드웨어와 직접 통신하며, 이미지/포인트클라우드/좌표 변환을 이벤트 기반으로 가공하고 REST·WebSocket·대시보드 형태로 제공합니다.
 
 ---
 
-## 🚀 핵심 기능
+## 목차
 
-- **실시간 카메라 스트리밍**: 저지연 웹소켓을 통해 컬러(BGR) 및 뎁스(Z16) 원본 이미지 스트림을 제공합니다.
-- **ArUco 기반 3D Pose 추정**: 카메라 영상에서 ArUco 보드 및 개별 마커를 실시간으로 탐지하고, 3D 공간에서의 정확한 위치와 방향(Pose)을 계산합니다.
-- **동적 좌표계 변환**: '카메라', '보드', '로봇' 좌표계를 기준으로 모든 객체(카메라, 보드, 로봇, 마커)의 Pose를 실시간으로 변환하여 제공합니다.
-- **비동기 이벤트 기반 아키텍처**: 각 서비스(`Camera`, `Aruco`, `Image`, `WebSocket`)가 독립적으로 동작하고, `EventBus`를 통해 효율적으로 통신하여 높은 성능과 확장성을 보장합니다.
-- **상세 모니터링 대시보드**: 모든 이미지 및 좌표 변환 스트림의 상태를 실시간으로 확인할 수 있는 웹 기반 대시보드를 제공합니다.
-- **상태 관리 및 관측 가능성**: 시스템의 모든 주요 상태와 이벤트 발생 현황을 API를 통해 실시간으로 모니터링할 수 있습니다.
+- [개요](#개요)
+- [핵심 기능](#핵심-기능)
+- [시스템 구성 요소](#시스템-구성-요소)
+- [데이터 파이프라인](#데이터-파이프라인)
+- [API & WebSocket 요약](#api--websocket-요약)
+- [설치 및 환경 구성](#설치-및-환경-구성)
+- [서버 실행](#서버-실행)
+- [필수 설정 파일](#필수-설정-파일)
+- [로봇 IK 서비스](#로봇-ik-서비스)
+- [관측 가능성과 운영](#관측-가능성과-운영)
+- [테스트 & 품질 관리](#테스트--품질-관리)
+- [참고 문서](#참고-문서)
+- [배포 시 고려 사항](#배포-시-고려-사항)
 
-## 🏗️ 아키텍처
+## 개요
 
-본 서버는 FastAPI를 기반으로 한 현대적인 비동기 이벤트 주도 아키텍처로 설계되었습니다.
+Enterprise Binpicking Server는 다음을 목표로 설계되었습니다.
 
-- **Services**: `CameraService`, `FrameSyncService`, `ArucoService` 등 각 핵심 비즈니스 로직을 담당하는 독립적인 컴포넌트입니다.
-- **EventBus**: 서비스 간의 통신을 담당하는 중앙 허브입니다. 서비스들은 서로를 직접 호출하지 않고, 이벤트를 발행(Publish)하거나 구독(Subscribe)함으로써 느슨한 결합(Loose Coupling)을 유지합니다.
-- **Store (`ApplicationStore`)**: 시스템의 모든 상태를 관리하는 중앙 저장소입니다. 각 데이터 도메인(`Camera`, `Image`, `Aruco` 등)은 전용 핸들러 클래스를 통해 관리되며, 모든 데이터 접근은 스레드로부터 안전(Thread-safe)합니다.
-- **API & WebSockets**: FastAPI 라우터를 통해 외부 세계에 HTTP API와 실시간 WebSocket 스트림을 노출합니다.
+- 고속 카메라 데이터 수집과 동기화
+- ArUco 보드·마커 기반 3D Pose 추정 및 다중 좌표계 변환
+- Pinocchio / ikpy 기반 로봇 역기구학 계산
+- 실시간 스트리밍과 시각화 UI 제공
+- 서비스 확장을 고려한 이벤트 주도 아키텍처
 
-## 🛠️ 기술 스택
+## 핵심 기능
 
-- **웹 프레임워크**: FastAPI, Uvicorn, WebSockets
-- **컴퓨터 비전 & 3D**: OpenCV, NumPy, SciPy
-- **데이터 처리 및 검증**: Pydantic, Pydantic-Settings
-- **핵심 유틸리티**: Loguru, Cachetools
-- **개발 환경**: Conda
-- **코드 품질**: Black, Ruff, Mypy
+- **저지연 이미지 스트리밍**: 컬러(BGR)·뎁스(Z16) 스트림을 JPEG 또는 Raw 형태로 수신·배포.
+- **ArUco Pose 추정**: 보드/외부 마커를 감지하고 카메라·보드·로봇 좌표계로 변환.
+- **포인트클라우드 생성**: 동기화된 컬러·뎁스 이미지로 RGB 포인트클라우드를 계산해 스트리밍.
+- **로봇 IK 백엔드**: Pinocchio와 ikpy 두 엔진을 모두 지원하며 변형별 URDF를 관리.
+- **이벤트 기반 파이프라인**: `EventBus`를 활용한 느슨한 결합, 고성능 비동기 처리.
+- **관측 및 대시보드**: 주요 상태·이미지·변환을 REST, WebSocket, HTML 대시보드로 노출.
 
-## 🏁 시작하기
+## 시스템 구성 요소
 
-### 1. 전제 조건
+- **ApplicationStore** (`app/stores/`): 도메인별 핸들러(Device, Calibration, Camera, Image, Aruco, Robot, Pointcloud, Event)로 상태를 관리하는 중앙 저장소. 모든 접근은 스레드 세이프.
+- **EventBus** (`app/core/event_bus.py`): 비동기 pub/sub 허브. 이벤트 메트릭(FPS, 발행 횟수)을 `EventHandler`에 기록.
+- **CameraService** (`app/services/camera_service.py`): 카메라 REST/WS 연동, raw/JPEG 스트림 수신, 주기적 상태 동기화.
+- **FrameSyncService**: 컬러·뎁스 프레임을 허용 오차(기본 150ms) 내에서 한 쌍으로 맞추고 `SYNC_FRAME_READY` 이벤트 발행.
+- **ArucoService**: 깊이 기반 정합 + PnP 하이브리드 방식으로 3D Pose 계산, 좌표계 변환 스냅샷 작성, 이벤트 발행.
+- **ImageService**: JPEG 인코딩/디코딩, 디버그 이미지와 보드 원근 보정 이미지 생성, WebSocket 이벤트 전달.
+- **PointcloudService**: 포인트클라우드 생성 및 다운샘플링, 스트리밍 이벤트 발행.
+- **RobotServicePinocchio / RobotServiceIkpy**: URDF 로딩, 변형(fixed/prismatic) 관리, 역기구학 연산.
+- **StreamingService**: WebSocket 구독자 관리(`ConnectionManager`)와 이벤트 연결, 이미지·좌표·포인트클라우드를 브로드캐스트.
+- **API & Views** (`app/api/v1`, `app/static/templates`): REST 엔드포인트와 운영 대시보드 템플릿을 제공.
 
-- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) 또는 Anaconda가 설치되어 있어야 합니다.
-- CUDA 호환 NVIDIA GPU 및 관련 드라이버 (AI/ML 기능 사용 시)
+## 데이터 파이프라인
 
-### 2. 환경 설정
+```
+카메라 HW ──WS/REST──▶ CameraService ──┐
+                                       ├─▶ EventBus ──▶ FrameSyncService ──▶ SYNC 프레임
+                                       │                                ├─▶ ArucoService ──▶ 좌표 변환/디버그
+                                       │                                ├─▶ PointcloudService ──▶ PointCloud
+                                       │                                └─▶ ImageService ──▶ JPEG 변환
+                                       └────────────────────────────────────▶ StreamingService ──▶ WebSocket Clients
+```
 
-1.  **Conda 환경 생성 및 활성화**:
-    프로젝트 루트 디렉토리에서 다음 명령을 실행하여 `environment.yml` 파일에 정의된 모든 의존성을 포함하는 Conda 가상 환경을 생성합니다.
+각 서비스는 최신 프레임만 처리하도록 코얼레싱 버퍼를 두어 지연을 최소화하며, CPU 바운드 작업은 `asyncio.to_thread`로 오프로딩합니다.
 
-    ```bash
-    conda env create -f environment.yml
-    conda activate binpicking_env
-    ```
+## API & WebSocket 요약
 
-2.  **설정 파일 구성**:
-    - `app/config/` 디렉토리 안에 다음 설정 파일들을 생성해야 합니다.
-    - `.env`: 카메라 API 주소 등 환경별 설정을 정의합니다. (`.env.example` 파일을 참고하세요.)
-    - `aruco_place.csv`: ArUco 보드를 구성하는 각 마커의 3D 좌표를 정의합니다.
-    - `robot_position.json`: ArUco 보드 좌표계 기준의 로봇 베이스 위치를 정의합니다.
+### HTTP 주요 엔드포인트 (prefix: `/api`)
 
-### 3. 서버 실행
+| 경로 | 메서드 | 설명 |
+| --- | --- | --- |
+| `/health/` | GET | 헬스 체크 |
+| `/store/status` | GET | 전체 Store 상태 스냅샷 |
+| `/store/events/status` | GET | 이벤트 타임라인 및 FPS |
+| `/device/camera/status` | GET | 카메라 디바이스/스트림 정보 |
+| `/images/color.jpg` | GET | 최신 컬러 JPEG |
+| `/images/depth.jpg` | GET | 최신 뎁스 JPEG |
+| `/images/color/raw` | GET | 컬러 Raw(BGR) bytes |
+| `/aruco/status` | GET | 보드 감지 결과 |
+| `/transforms/all?frame=robot` | GET | 선택 좌표계 기준 변환 스냅샷 |
+| `/pointcloud/data?max_points=10000` | GET | 다운샘플링된 포인트클라우드 |
+| `/robot/ik` | POST | 기본 백엔드 IK 계산 |
+| `/robot/ik/{backend}` | POST | 백엔드 선택 IK (pinocchio / ikpy) |
 
-프로젝트 루트 디렉토리에서 다음 명령을 실행하여 Uvicorn으로 FastAPI 서버를 시작합니다.
+> 전체 목록과 스키마는 `API_DOCUMENTATION.md` 및 Swagger (`/docs`) 참고.
+
+### WebSocket 채널
+
+| 채널 | 설명 | 페이로드 |
+| --- | --- | --- |
+| `/ws/color_jpg` | 최신 컬러 JPEG 이미지 스트림 | JPEG bytes |
+| `/ws/depth_jpg` | 최신 뎁스 JPEG 스트림 | JPEG bytes |
+| `/ws/aruco_debug_jpg` | 디버그 오버레이 이미지 | JPEG bytes |
+| `/ws/board_perspective_jpg` | 보정된 보드 탑뷰 | JPEG bytes |
+| `/ws/transforms_camera` | 카메라 좌표계 변환 스냅샷 | JSON |
+| `/ws/transforms_board` | 보드 좌표계 변환 스냅샷 | JSON |
+| `/ws/transforms_robot` | 로봇 좌표계 변환 스냅샷 | JSON |
+| `/ws/pointcloud` | 다운샘플링된 포인트클라우드 | JSON (points, colors) |
+
+## 설치 및 환경 구성
+
+### 사전 준비
+
+- Python 3.11+
+- Conda (Miniconda/Anaconda) 권장
+- OpenCV/PyTorch 연산이 가능한 CPU, 포인트클라우드/IK 가속을 위한 GPU(Optional)
+- 외부 카메라·로봇 제어 장비와 네트워크 연결
+
+### Conda 환경 생성
+
+```bash
+conda env create -f environment.yml
+conda activate binpicking_env
+# 또는 경량 구성이 필요하면 environment2.yml 참고
+```
+
+### 의존성 확인
+
+- `requirements.txt` : pip 기반 설치가 필요할 때 사용
+- `environment.yml` : 개발 기본 환경 (OpenCV, Pinocchio, ikpy 등 포함)
+- `environment2.yml` : 대안 혹은 경량 환경
+
+## 서버 실행
+
+### 개발 모드(Uvicorn)
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 52000 --reload
 ```
 
-- `--host 0.0.0.0`: 모든 네트워크 인터페이스에서 접속을 허용합니다.
-- `--port 52000`: 서버가 사용할 포트를 지정합니다.
-- `--reload`: 코드 변경 시 서버가 자동으로 재시작됩니다. (개발용)
+- `--reload`는 코드 변경 시 자동 재시작(개발 전용)
+- 포트는 카메라·로봇 장비 설정에 따라 조정
 
-서버가 성공적으로 실행되면, 웹 브라우저에서 `http://localhost:52000` 로 접속하여 메인 대시보드를 확인할 수 있습니다.
+### Run 스크립트
 
-## 📚 API 및 WebSocket 문서
-
-서버가 제공하는 모든 API 엔드포인트와 WebSocket 채널에 대한 자세한 정보는 아래 문서에서 확인할 수 있습니다.
-
-- **[API 기능 정의서](./API_DOCUMENTATION.md)**
-- **Swagger UI (자동 생성 문서)**: 서버 실행 후 `http://localhost:52000/docs` 에서 확인
-
-## 📂 프로젝트 구조
-
-```
-.
-├── app/
-│   ├── api/                # HTTP API 엔드포인트 라우터
-│   ├── config/             # 설정 파일 (aruco_place.csv 등)
-│   ├── core/               # 핵심 로직 (EventBus, Config, Logging)
-│   ├── dependencies.py     # 의존성 주입 설정
-│   ├── schemas/            # Pydantic 데이터 모델 (DTO)
-│   ├── services/           # 비즈니스 로직 (Camera, Aruco 등)
-│   ├── static/             # 정적 파일 (HTML 템플릿 등)
-│   ├── stores/             # 상태 관리 (ApplicationStore 및 핸들러)
-│   ├── websockets/         # WebSocket 관련 로직
-│   └── main.py             # FastAPI 애플리케이션 진입점
-├── config/
-│   └── .env                # 환경 변수 설정 파일
-├── scripts/                # 보조 스크립트
-├── API_DOCUMENTATION.md    # API 기능 정의서
-└── environment.yml         # Conda 환경 의존성 파일
+```bash
+python run.py  # 기본 포트: 53000
 ```
 
-## 🔍 코드 분석 요약
+### 실행 후 확인
 
-### 핵심 아키텍처 패턴
+- 메인 대시보드: `http://localhost:52000/`
+- OpenAPI 문서: `http://localhost:52000/docs`
+- ReDoc: `http://localhost:52000/redoc`
 
-1. **이벤트 주도 아키텍처 (Event-Driven Architecture)**
-   - `EventBus`가 중앙 메시지 브로커 역할
-   - 서비스 간 직접 호출 없이 이벤트 발행/구독으로 통신
-   - 주요 이벤트 타입: `COLOR_IMAGE_RECEIVED`, `DEPTH_IMAGE_RECEIVED`, `SYNC_FRAME_READY`, `ARUCO_UPDATE` 등
+## 필수 설정 파일
 
-2. **의존성 주입 (Dependency Injection)**
-   - `dependencies.py`에서 모든 서비스의 싱글톤 인스턴스 관리
-   - FastAPI의 `Depends`를 활용한 깔끔한 의존성 주입
+`app/config/` 디렉터리에 다음 파일을 준비해야 합니다.
 
-3. **계층적 서비스 구조**
-   - **기본 계층**: `ApplicationStore`, `EventBus`, `ConnectionManager`
-   - **서비스 계층**: `CameraService`, `ArucoService`, `ImageService`, `FrameSyncService`
-   - **스트리밍 계층**: `StreamingService` (WebSocket 브로드캐스팅)
+| 파일 | 설명 |
+| --- | --- |
+| `.env` | 카메라 API URL, WebSocket 타임아웃, 로봇 URDF 경로 등 환경 변수 (`app/core/config.py` 참고) |
+| `aruco_place.csv` | 보드 구성 마커 ID 및 3D 위치 |
+| `robot_position.json` | 보드 좌표계 대비 로봇 베이스 Pose (JSON: x,y,z) |
+| `aruco_config.json` *(선택)* | 감지 파라미터 커스터마이징. 없으면 기본값 로드 |
 
-### 주요 컴포넌트 분석
+환경 변수 주요 항목 (`AppSettings`):
 
-#### 1. ApplicationStore (중앙 상태 저장소)
-- 도메인별 핸들러로 상태 관리 분리
-  - `DeviceHandler`: 카메라 디바이스 상태
-  - `CalibrationHandler`: 카메라 캘리브레이션 데이터
-  - `CameraHandler`: 원본 BGR/Z16 이미지
-  - `ImageHandler`: 처리된 JPEG 이미지
-  - `ArucoHandler`: ArUco 마커 감지 결과
-  - `EventHandler`: 이벤트 발생 타임스탬프
+- `CAMERA_API_BASE_URL`
+- `COLOR_STREAM_MODE` / `DEPTH_STREAM_MODE` (`jpeg` 또는 `raw`)
+- `ROBOT_URDF_PATH_FIXED`, `ROBOT_URDF_PATH_PRISMATIC`
+- `ROBOT_IK_BACKEND` (`pinocchio` or `ikpy`)
+- `POINTCLOUD_DOWNSAMPLE_FACTOR`, `MAX_POINTCLOUD_DEPTH_M`
 
-#### 2. 핵심 서비스들
-- **CameraService**: 
-  - 카메라 API와 WebSocket으로 실시간 이미지 수신
-  - 주기적 API 동기화로 카메라 상태 업데이트
-  
-- **FrameSyncService**: 
-  - 컬러/뎁스 이미지 타임스탬프 기반 동기화
-  - 150ms 허용 오차로 프레임 쌍 매칭
-  
-- **ArucoService**: 
-  - ArUco 보드 및 개별 마커 감지
-  - 3D 포즈 추정 및 좌표계 변환
-  - 카메라/보드/로봇 좌표계 간 변환 제공
-  
-- **ImageService**: 
-  - 이미지 인코딩 (BGR → JPEG)
-  - ArUco 디버그 이미지 생성
-  - 보드 원근 보정 이미지 생성
+## 로봇 IK 서비스
 
-#### 3. 실시간 스트리밍
-- **WebSocket 엔드포인트**:
-  - 이미지 스트림: `/ws/color_jpg`, `/ws/depth_jpg`, `/ws/aruco_debug_jpg`, `/ws/board_perspective_jpg`
-  - 좌표 변환 스트림: `/ws/transforms_camera`, `/ws/transforms_board`, `/ws/transforms_robot`
-  
-- **StreamingService**: 
-  - 이벤트 구독으로 실시간 데이터 수신
-  - ConnectionManager를 통해 연결된 클라이언트에 브로드캐스트
+- **Pinocchio 백엔드** (`RobotServicePinocchio`): 고정/프리스매틱 URDF를 모두 로드, DLS 기반 반복 IK, 조인트 제한 적용.
+- **ikpy 백엔드** (`RobotServiceIkpy`): 체인 기반 역기구학, 활성 조인트 필터링, workspace 검사.
+- `POST /api/robot/ik`: 기본 백엔드를 이용한 다중 타깃 IK 계산.
+- `POST /api/robot/ik/{backend}`: 특정 엔진 지정.
+- `POST /api/robot/ik/*/downward`: 그리퍼 다운어프로치 전용 헬퍼.
+- 자세한 파라미터와 예시는 `docs/robot_ik_api.md`, `docs/robot_ik_api_usage.md`, `docs/robot_ik_plan.md` 참고.
 
-### 데이터 플로우
+서비스 시작 시 URDF는 `ApplicationStore.robot`에 캐시되며, 마지막 관절 값은 반복 호출의 초기값으로 재사용됩니다.
 
-```
-카메라 WebSocket → CameraService → EventBus → FrameSyncService
-                                      ↓
-                                 동기화된 프레임
-                                      ↓
-                        ArucoService ← EventBus
-                              ↓
-                    좌표 변환 및 마커 감지
-                              ↓
-                    ImageService ← EventBus
-                              ↓
-                    이미지 처리 및 인코딩
-                              ↓
-                  StreamingService ← EventBus
-                              ↓
-                    WebSocket 클라이언트
-```
+## 관측 가능성과 운영
 
-### API 구조
+- **상태 모니터링**
+  - `/api/store/status`: 디바이스/캘리브레이션/이벤트/포인트클라우드 한눈에 확인.
+  - `/api/store/events/status`, `/api/store/events/fps`: 이벤트 발행 빈도 추적.
+- **대시보드**
+  - `/api/views/v1/images`: 이미지 스트림 모니터링.
+  - `/api/views/v1/transforms`: 좌표 변환 스트림 모니터링.
+  - `/`: 메인 대시보드(템플릿 `main_dashboard.html`).
+- **로깅**
+  - `app/core/logging.py`에서 Loguru 기반 설정.
+  - 서비스별 시작/중지 및 오류 상황을 상세 로깅.
+- **백그라운드 라이프사이클**
+  - FastAPI lifespan hook에서 모든 서비스 start/stop을 통합 관리.
+  - 장애 발생 시 이벤트 구독 해제 및 리소스 정리를 보장.
 
-#### HTTP API (`/api/`)
-- `/api/health`: 서버 상태 확인
-- `/api/store`: 전체 애플리케이션 상태 조회
-- `/api/images`: 처리된 이미지 조회
-- `/api/aruco`: ArUco 감지 결과 조회
-- `/api/device`: 카메라 디바이스 정보
-- `/api/transforms`: 좌표계 변환 API (board, robot, camera, external_markers)
-- `/api/masks`: 마스크 관련 API (현재 미구현)
-- `/api/views/v1`: 웹 대시보드 뷰
+## 테스트 & 품질 관리
 
-#### WebSocket API
-실시간 스트리밍을 위한 양방향 통신 채널 제공
+- **단위 테스트**
+  - `pytest` (예: `pytest tests/test_robot_api_ik.py`)
+- **정적 분석 & 포맷팅**
+  - `ruff`, `black`, `mypy` (환경에 포함). CI나 pre-commit 훅 구성 권장.
+- **샘플 스크립트**
+  - `scripts/test_robot_downward.py`, `scripts/test_ikpy_api_simple.py` 등으로 로컬 검증.
 
-### 특징적인 구현
+## 참고 문서
 
-1. **비동기 처리 최적화**
-   - 모든 서비스가 `asyncio` 기반 비동기 동작
-   - 이벤트 핸들러에서 짧은 락(lock) 유지로 병목 최소화
+- `API_DOCUMENTATION.md`: REST/WebSocket 기능 정의와 페이로드 설명.
+- `docs/robot_ik_api.md`: IK 설계 및 API 세부 스펙.
+- `docs/robot_ik_api_usage.md`: 단계별 활용 예제.
+- `docs/robot_ik_implementation.md`: 내부 구현 세부 사항.
+- `docs/robot_ik_plan.md`: 계획 및 백로그.
+- `docs/opc_tags.md`, `docs/robot_ik_api.md` 등 기타 도메인 문서.
+- `backup/` 및 `report/` 폴더: 기술 부채/보고서 기록.
 
-2. **모듈화된 좌표 변환**
-   - 모든 객체(카메라, 보드, 로봇, 마커)를 3개 좌표계 기준으로 표현 가능
-   - 4x4 변환 행렬을 활용한 정확한 3D 변환
+## 배포 시 고려 사항
 
-3. **확장 가능한 이벤트 시스템**
-   - 새로운 서비스 추가 시 EventType만 정의하면 쉽게 통합 가능
-   - 느슨한 결합으로 서비스 간 독립성 보장
+- **카메라·로봇 네트워크**: 방화벽, 포트(WS/REST) 및 대역폭 확보.
+- **GPU/CPU 자원**: 고해상도 스트림의 JPEG 인코딩 및 ArUco 추적은 CPU 부하가 크므로 코어 수 확인.
+- **신뢰성**: CameraService는 자동 재연결 로직을 포함하지만, 안정적인 NTP 동기화가 필요.
+- **확장**: 새로운 이벤트 타입을 추가할 경우 `app/core/event_type.py`, `EventBus`, 관련 Store 핸들러를 함께 확장.
+- **로그/모니터링 통합**: 외부 관측 시스템(예: ELK, Prometheus)과 연동하려면 Loguru sink/metrics exporter 추가.
+- **컨테이너화**: Conda 환경 크기를 고려하여 Mamba/Miniforge 또는 slim pip 환경으로 재구성 가능.
+
+---
+
+지속적인 개선이나 신규 기능 제안은 문서(`docs/`, `backup/`)에 정리된 계획과 일정을 참고하세요. Issue나 추가 질문이 있다면 언제든지 환영합니다.
