@@ -16,7 +16,9 @@
         const imgElement = document.getElementById('stream');
         
         const wsPath = `/ws/${streamId}`;
-        const socket = new WebSocket(`ws://${window.location.host}${wsPath}`);
+        let socket = null;
+        let reconnectTimer = null;
+        const reconnectDelay = 1000;
         
         // FPS calculation variables
         let frameCount = 0;
@@ -52,33 +54,64 @@
 
         setInterval(updateFpsDisplay, 100);
 
-        socket.onopen = () => {
-            console.log(`WebSocket connected to ${wsPath}`);
-        };
-
-        socket.onmessage = (event) => {
-            if (event.data instanceof Blob) {
-                if (imgElement.src) {
-                    URL.revokeObjectURL(imgElement.src);
-                }
-                const typedBlob = new Blob([event.data], { type: 'image/jpeg' });
-                const imageUrl = URL.createObjectURL(typedBlob);
-                imgElement.src = imageUrl;
-                
-                // Increment frame counter
-                frameCount++;
+        function scheduleReconnect() {
+            if (reconnectTimer) {
+                return;
             }
-        };
-
-        socket.onclose = (event) => {
-            console.log(`WebSocket disconnected from ${wsPath}: ${event.code}`);
-            imgElement.src = ""; // Clear image on disconnect
-            fpsDisplay.textContent = 'FPS: 0 (Disconnected)';
-        };
-        
-        socket.onerror = (error) => {
-            console.error(`WebSocket error on ${wsPath}:`, error);
+            fpsDisplay.textContent = 'FPS: 0 (Reconnecting...)';
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connect();
+            }, reconnectDelay);
         }
+
+        function connect() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+
+            if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+                socket.close();
+            }
+
+            socket = new WebSocket(`ws://${window.location.host}${wsPath}`);
+
+            socket.onopen = () => {
+                console.log(`WebSocket connected to ${wsPath}`);
+            };
+
+            socket.onmessage = (event) => {
+                if (event.data instanceof Blob) {
+                    if (imgElement.src) {
+                        URL.revokeObjectURL(imgElement.src);
+                    }
+                    const typedBlob = new Blob([event.data], { type: 'image/jpeg' });
+                    const imageUrl = URL.createObjectURL(typedBlob);
+                    imgElement.src = imageUrl;
+                    
+                    // Increment frame counter
+                    frameCount++;
+                }
+            };
+
+            socket.onclose = (event) => {
+                console.log(`WebSocket disconnected from ${wsPath}: ${event.code}`);
+                imgElement.src = ""; // Clear image on disconnect
+                fpsDisplay.textContent = 'FPS: 0 (Disconnected)';
+                scheduleReconnect();
+            };
+            
+            socket.onerror = (error) => {
+                console.error(`WebSocket error on ${wsPath}:`, error);
+                if (socket && socket.readyState !== WebSocket.CLOSING && socket.readyState !== WebSocket.CLOSED) {
+                    socket.close();
+                }
+                scheduleReconnect();
+            };
+        }
+
+        connect();
     </script>
 </body>
 </html>

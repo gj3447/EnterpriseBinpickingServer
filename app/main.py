@@ -3,7 +3,6 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 import traceback
-import asyncio
 
 from app.api.v1.router import api_router
 from app.websockets.v1.router import router as websocket_router
@@ -14,6 +13,8 @@ from app.dependencies import (
     get_image_service,
     get_frame_sync_service,
     get_robot_service,
+    get_robot_service_pinocchio,
+    get_robot_service_ikpy,
     get_pointcloud_service
 )
 from app.core.logging import logger
@@ -28,14 +29,22 @@ async def lifespan(app: FastAPI):
     frame_sync_service = get_frame_sync_service()
     aruco_service = get_aruco_service()
     image_service = get_image_service()
-    robot_service = get_robot_service()
+    robot_services = []
+    for service in (
+        get_robot_service(),
+        get_robot_service_pinocchio(),
+        get_robot_service_ikpy(),
+    ):
+        if service not in robot_services:
+            robot_services.append(service)
     pointcloud_service = get_pointcloud_service()
     streaming_service = get_streaming_service()
 
     logger.info("Application startup: Starting background services...")
     
     # 각 서비스의 백그라운드 리스너/작업 시작
-    await robot_service.start()  # URDF 로드
+    for service in robot_services:
+        await service.start()  # URDF 로드
     await camera_service.start()
     await frame_sync_service.start()
     await aruco_service.start()
@@ -52,7 +61,8 @@ async def lifespan(app: FastAPI):
     await aruco_service.stop()
     await image_service.stop()
     await pointcloud_service.stop()
-    await robot_service.stop()
+    for service in reversed(robot_services):
+        await service.stop()
     streaming_service.stop_listening()
 
     logger.info("All background services have been signaled to stop.")

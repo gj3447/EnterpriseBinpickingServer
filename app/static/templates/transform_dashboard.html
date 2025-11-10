@@ -106,6 +106,9 @@
                 this.frameCount = 0;
                 this.lastFpsTime = performance.now();
                 this.currentFps = 0;
+                this.reconnectDelay = 1000;
+                this.reconnectTimer = null;
+                this.socket = null;
                 this.createElement();
                 this.connect();
                 this.startFpsUpdate();
@@ -136,8 +139,19 @@
             }
 
             connect() {
+                if (this.reconnectTimer) {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                }
+
+                if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+                    this.socket.close();
+                }
+
                 const wsPath = `/ws/${this.streamId}`;
                 this.socket = new WebSocket(`ws://${window.location.host}${wsPath}`);
+
+                this.updateStatus('Connecting...', 'var(--status-connecting)');
 
                 this.socket.onopen = () => {
                     this.updateStatus('Connected', 'var(--status-connected)');
@@ -160,16 +174,35 @@
 
                 this.socket.onclose = () => {
                     this.updateStatus('Connection Closed', 'var(--status-closed)');
+                    this.preElement.textContent = 'Connection Closed.';
+                    this.scheduleReconnect();
                 };
                 
                 this.socket.onerror = () => {
                     this.updateStatus('Connection Error', 'var(--status-closed)');
+                    this.preElement.textContent = 'Connection Error.';
+                    if (this.socket && this.socket.readyState !== WebSocket.CLOSING && this.socket.readyState !== WebSocket.CLOSED) {
+                        this.socket.close();
+                    }
+                    this.scheduleReconnect();
                 };
             }
 
             updateStatus(text, color) {
                 this.statusText.textContent = text;
                 this.statusLight.style.backgroundColor = color;
+            }
+            
+            scheduleReconnect() {
+                if (this.reconnectTimer) {
+                    return;
+                }
+                this.preElement.textContent = 'Reconnecting...';
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = null;
+                    this.connect();
+                }, this.reconnectDelay);
+                this.updateStatus('Reconnecting...', 'var(--status-connecting)');
             }
             
             startFpsUpdate() {

@@ -2,17 +2,23 @@
 애플리케이션의 의존성(dependency)을 생성하고 관리합니다.
 """
 import json
-from typing import Optional
+from typing import Optional, Union
 from app.schemas.aruco import Pose
 from app.schemas.aruco_config import ArucoConfig
 from app.core.logging import logger
+from app.core.config import settings
 
 from app.stores.application_store import ApplicationStore
 from app.services.camera_service import CameraService
 from app.services.aruco_service import ArucoService
 from app.services.image_service import ImageService
 from app.services.frame_sync_service import FrameSyncService  # 임포트 추가
-from app.services.robot_service import RobotService
+from app.services.robot_service import (
+    RobotBackend,
+    RobotServiceIkpy,
+    RobotServicePinocchio,
+    get_robot_service_class,
+)
 from app.services.pointcloud_service import PointcloudService
 from app.websockets.connection_manager import ConnectionManager
 from app.websockets.streaming_service import StreamingService
@@ -22,7 +28,18 @@ from app.core.event_bus import EventBus
 # --- 설정 파일 경로 ---
 ARUCO_CONFIG_PATH = "app/config/aruco_config.json"
 ROBOT_POSITION_CONFIG_PATH = "app/config/robot_position.json"
-ROBOT_URDF_PATH = "app/static/urdf/dsr_description2/urdf/a0509.urdf"
+
+if settings.ROBOT_URDF_MODE == "prismatic" and settings.ROBOT_URDF_PATH_PRISMATIC is None:
+    logger.warning(
+        "ROBOT_URDF_MODE='prismatic'로 설정되었지만 ROBOT_URDF_PATH_PRISMATIC 값이 없어 기본 URDF로 대체합니다."
+    )
+
+logger.info(
+    "Robot URDF configuration resolved: mode=%s, fixed=%s, prismatic=%s",
+    settings.ROBOT_URDF_MODE,
+    settings.ROBOT_URDF_PATH_FIXED,
+    settings.ROBOT_URDF_PATH_PRISMATIC,
+)
 
 def _load_robot_pose_from_config(path: str) -> Optional[Pose]:
     try:
@@ -104,7 +121,38 @@ _frame_sync_service = FrameSyncService(event_bus=_event_bus, tolerance_ms=150) #
 _pointcloud_service = PointcloudService(store=_store, event_bus=_event_bus)  # PointcloudService 인스턴스 생성
 _image_service = ImageService(store=_store, event_bus=_event_bus)
 _camera_service = CameraService(store=_store, event_bus=_event_bus)
-_robot_service = RobotService(store=_store, urdf_path=ROBOT_URDF_PATH)
+
+_robot_service_pinocchio = RobotServicePinocchio(
+    store=_store,
+    fixed_urdf_path=settings.ROBOT_URDF_PATH_FIXED,
+    prismatic_urdf_path=settings.ROBOT_URDF_PATH_PRISMATIC,
+)
+
+_robot_service_ikpy = RobotServiceIkpy(
+    store=_store,
+    fixed_urdf_path=settings.ROBOT_URDF_PATH_FIXED,
+    prismatic_urdf_path=settings.ROBOT_URDF_PATH_PRISMATIC,
+)
+
+RobotServiceUnion = Union[RobotServicePinocchio, RobotServiceIkpy]
+
+try:
+    _default_backend: RobotBackend = settings.ROBOT_IK_BACKEND  # type: ignore[assignment]
+    _ = get_robot_service_class(_default_backend)
+except ValueError as exc:
+    logger.error("Unsupported ROBOT_IK_BACKEND '%s': %s", settings.ROBOT_IK_BACKEND, exc)
+    _default_backend = "pinocchio"
+
+if _default_backend == "ikpy":
+    _robot_service_default: RobotServiceUnion = _robot_service_ikpy
+else:
+    _robot_service_default = _robot_service_pinocchio
+
+logger.info(
+    "Robot IK services initialized | default=%s available_backends=%s",
+    _default_backend,
+    ["pinocchio", "ikpy"],
+)
 _robot_pose = _load_robot_pose_from_config(ROBOT_POSITION_CONFIG_PATH)
 _aruco_config = _load_aruco_config(ARUCO_CONFIG_PATH)
 # board_config_path를 config 디렉토리 기준으로 구성
@@ -131,7 +179,9 @@ def get_event_bus() -> EventBus: return _event_bus
 def get_camera_service() -> CameraService: return _camera_service
 def get_aruco_service() -> ArucoService: return _aruco_service
 def get_image_service() -> ImageService: return _image_service
-def get_robot_service() -> RobotService: return _robot_service
+def get_robot_service() -> RobotServiceUnion: return _robot_service_default
+def get_robot_service_pinocchio() -> RobotServicePinocchio: return _robot_service_pinocchio
+def get_robot_service_ikpy() -> RobotServiceIkpy: return _robot_service_ikpy
 def get_frame_sync_service() -> FrameSyncService: return _frame_sync_service  # 공급자 함수 추가
 def get_pointcloud_service() -> PointcloudService: return _pointcloud_service  # 공급자 함수 추가
 def get_connection_manager() -> ConnectionManager: return _connection_manager

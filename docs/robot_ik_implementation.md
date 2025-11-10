@@ -9,10 +9,17 @@
 
 ## 1. URDF 전략
 1. 기본 URDF(그리퍼 고정)와 프리스매틱 조인트가 포함된 URDF 두 버전을 준비
-   - `.env`의 `ROBOT_URDF_PATH`로 어느 버전을 로드할지 선택하도록 구성
-   - 예: `ROBOT_URDF_PATH=app/static/urdf/dsr_description2/urdf/a0509.urdf` (고정), `.../a0509_var_grip.urdf` (프리스매틱)
+   - `.env`에 아래 값을 추가해 선택적으로 로드
+     - `ROBOT_URDF_PATH_FIXED` : 기본(고정) URDF 경로
+     - `ROBOT_URDF_PATH_PRISMATIC` : 프리스매틱 URDF 경로(선택)
+     - `ROBOT_URDF_MODE` : `fixed` / `prismatic` / `auto`
+       - `fixed` → 항상 `ROBOT_URDF_PATH_FIXED`
+       - `prismatic` → 프리스매틱 경로 존재 시 사용, 없으면 자동으로 fixed로 폴백
+       - `auto` → 둘 다 존재하면 프리스매틱을 기본값으로, 없으면 fixed 로드
+     - `GRIPPER_JOINT_NAME` : 프리스매틱 URDF에서 사용된 조인트 이름(예: `gripper_extension_joint`)
+   - 서버 기동 시 두 경로가 모두 존재하면 **두 variant를 동시에 로드**하고, `ROBOT_URDF_MODE`에 따라 기본 variant 를 결정한다.
 2. 서버 기동 시 `RobotService`가 선택된 URDF를 Pinocchio로 로드하고, 모델 객체에 `has_gripper_joint` 플래그를 기록 (존재 여부 판별)
-3. `/api/device/robot/status`에서 `loaded=True`를 확인하고, 필요 시 현재 URDF 버전을 응답에 포함
+3. `/api/robot/status` 및 `/api/robot/urdf?variant=...`에서 로딩된 variant 목록, 기본값, `has_gripper_joint` 등을 확인
 
 ## 2. RobotService 확장 (`app/services/robot_service.py`)
 1. Pinocchio 모델을 가져와 IK를 수행하는 `solve_ik(...)` 메서드 추가
@@ -30,9 +37,11 @@
    - Pinocchio 미로딩, 프레임 ID 미지정, 수렴 실패 등은 `RobotServiceError`(새로운 예외 클래스)로 감싸기
 
 ## 3. API 업데이트 (`app/api/v1/endpoints/robot.py`)
-1. 기존 GET `/urdf` 엔드포인트를 Pinocchio 딕셔너리 구조에 맞게 수정
-   - `robot_object`가 dict 인지 확인 후 `robot_name`, `dof`, `joint_names`, `joint_limits` 등 반환
-2. POST `/api/device/robot/ik` 추가
+1. 기존 GET `/api/robot/urdf` 응답을 Pinocchio 딕셔너리 구조에 맞게 정리
+   - 쿼리 파라미터 `variant` 로 `fixed`/`prismatic` 중 원하는 정보를 조회
+2. POST `/api/robot/ik` 엔드포인트에서 IK 실행
+   - 요청 모델에 `mode` 필드 외에 `urdf_variant`(선택)를 추가해 variant 를 지정 가능
+   - 응답에는 `urdf_variant_used`가 포함되어 실제 사용된 모델을 확인할 수 있다.
    - 요청 모델에 `mode` 필드 추가 (`"fixed"`, `"prismatic"`, `"auto"` 등)
    - `robot_service.solve_ik` 호출 시, `mode`, 현재 URDF 상태(`has_gripper_joint`), `coordinate_mode`(예: `"base"`, `"custom"`)를 함께 전달
    - `coordinate_mode`가 `custom`이면 요청에 포함된 축 정의(예: `up_axis`, `forward_axis`)를 이용해 회전 행렬을 생성하고 pose를 변환한 뒤 IK 수행
@@ -53,7 +62,7 @@
    - Pinocchio 모형(간단한 URDF 또는 mock)을 이용해 IK가 수렴하는지 확인
    - 실패 케이스(도달 불가능한 pose, joint limit 초과) 검증
 2. 통합 테스트
-   - FastAPI 클라이언트로 `/api/device/robot/ik` 호출 → 응답 구조 검증
+   - FastAPI 클라이언트로 `/api/robot/ik` 호출 → 응답 구조 검증
 
 ## 7. 문서/운영
 - `docs/robot_ik_plan.md` 갱신 및 README에 사용법 추가

@@ -36,6 +36,7 @@ redis
 
 # 로봇 통신
 roslibpy
+ikpy
 
 # 개발 도구
 black

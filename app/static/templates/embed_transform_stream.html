@@ -16,7 +16,9 @@
         const outputPre = document.getElementById('output');
 
         const wsPath = `/ws/${streamId}`;
-        const socket = new WebSocket(`ws://${window.location.host}${wsPath}`);
+        let socket = null;
+        let reconnectTimer = null;
+        const reconnectDelay = 1000;
         
         // FPS calculation variables
         let frameCount = 0;
@@ -52,34 +54,66 @@
 
         setInterval(updateFpsDisplay, 100);
 
-        socket.onopen = () => {
-            console.log(`WebSocket connected to ${wsPath}`);
-            outputPre.textContent = "Waiting for data...";
-        };
-
-        socket.onmessage = (event) => {
-            try {
-                const transformData = JSON.parse(event.data);
-                outputPre.textContent = JSON.stringify(transformData, null, 2);
-                
-                // Increment frame counter
-                frameCount++;
-            } catch (e) {
-                console.error("Error parsing JSON:", e);
-                outputPre.textContent = "Error: Could not parse data from server.";
+        function scheduleReconnect() {
+            if (reconnectTimer) {
+                return;
             }
-        };
-
-        socket.onclose = (event) => {
-            console.log(`WebSocket disconnected from ${wsPath}: ${event.code}`);
-            outputPre.textContent = "Connection Closed.";
-            fpsDisplay.textContent = 'Updates/sec: 0 (Disconnected)';
-        };
-        
-        socket.onerror = (error) => {
-            console.error(`WebSocket error on ${wsPath}:`, error);
-            outputPre.textContent = "Connection Error.";
+            fpsDisplay.textContent = 'Updates/sec: 0 (Reconnecting...)';
+            outputPre.textContent = "Reconnecting...";
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connect();
+            }, reconnectDelay);
         }
+
+        function connect() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+
+            if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+                socket.close();
+            }
+
+            socket = new WebSocket(`ws://${window.location.host}${wsPath}`);
+
+            socket.onopen = () => {
+                console.log(`WebSocket connected to ${wsPath}`);
+                outputPre.textContent = "Waiting for data...";
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const transformData = JSON.parse(event.data);
+                    outputPre.textContent = JSON.stringify(transformData, null, 2);
+                    
+                    // Increment frame counter
+                    frameCount++;
+                } catch (e) {
+                    console.error("Error parsing JSON:", e);
+                    outputPre.textContent = "Error: Could not parse data from server.";
+                }
+            };
+
+            socket.onclose = (event) => {
+                console.log(`WebSocket disconnected from ${wsPath}: ${event.code}`);
+                outputPre.textContent = "Connection Closed.";
+                fpsDisplay.textContent = 'Updates/sec: 0 (Disconnected)';
+                scheduleReconnect();
+            };
+            
+            socket.onerror = (error) => {
+                console.error(`WebSocket error on ${wsPath}:`, error);
+                outputPre.textContent = "Connection Error.";
+                if (socket && socket.readyState !== WebSocket.CLOSING && socket.readyState !== WebSocket.CLOSED) {
+                    socket.close();
+                }
+                scheduleReconnect();
+            };
+        }
+
+        connect();
     </script>
 </body>
 </html>

@@ -4,6 +4,7 @@ import websockets
 import numpy as np
 import time
 from typing import Optional, List
+from websockets import exceptions as ws_exceptions
 from pydantic import ValidationError
 
 from app.stores.application_store import ApplicationStore
@@ -25,6 +26,10 @@ class CameraService:
         self.api_client = httpx.AsyncClient(base_url=f"http://{self.base_url}")
         self._is_running = False
         self.tasks: List[asyncio.Task] = []
+        self._reconnect_delay = max(0.0, settings.CAMERA_WS_RECONNECT_DELAY_SECONDS)
+        self._receive_timeout = max(0.0, settings.CAMERA_WS_RECV_TIMEOUT_SECONDS)
+        self._connect_timeout = max(0.0, settings.CAMERA_WS_CONNECT_TIMEOUT_SECONDS)
+        self._close_timeout = max(0.0, settings.CAMERA_WS_CLOSE_TIMEOUT_SECONDS)
 
     async def _periodic_api_sync(self):
         # ... (이전과 동일)
@@ -90,16 +95,27 @@ class CameraService:
         bytes_per_frame = width * height * bytes_per_pixel
         frames_received = 0
         last_log_time = time.time()
+        recv_timeout = self._receive_timeout if self._receive_timeout > 0 else None
         
         while self._is_running:
             try:
-                async with websockets.connect(uri, max_size=None) as websocket:
+                ws_kwargs = self._build_ws_connect_kwargs()
+                async with websockets.connect(uri, **ws_kwargs) as websocket:
                     logger.info(f"Connected to {stream_name} websocket.")
                     while self._is_running:
-                        # WebSocket 수신 시간 측정
-                        recv_start = time.time()
-                        message = await websocket.recv()
-                        recv_time = time.time() - recv_start
+                        try:
+                            recv_start = time.time()
+                            if recv_timeout:
+                                message = await asyncio.wait_for(websocket.recv(), timeout=recv_timeout)
+                            else:
+                                message = await websocket.recv()
+                            recv_time = time.time() - recv_start
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                f"No data received from {stream_name} websocket for {self._receive_timeout:.1f}s. "
+                                "Reconnecting..."
+                            )
+                            break
                         
                         if isinstance(message, bytes) and len(message) == bytes_per_frame:
                             dtype = np.uint16 if "depth" in stream_name else np.uint8
@@ -122,23 +138,46 @@ class CameraService:
                                 self.store.camera_raw.update_depth_image(image, current_timestamp)
                                 payload = DepthImageReceivedPayload(timestamp=current_timestamp, image_data=image)
                                 await self.event_bus.publish(EventType.DEPTH_IMAGE_RECEIVED.value, payload)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Connection attempt to {stream_name} websocket timed out after {self._connect_timeout:.1f}s."
+                )
+            except (ws_exceptions.ConnectionClosed, ws_exceptions.InvalidStatusCode, OSError) as e:
+                logger.warning(f"Websocket connection issue for {stream_name}: {e}. Retrying…")
             except Exception as e:
-                logger.warning(f"Websocket connection error for {stream_name}: {e}. Retrying in 5s...")
-                await asyncio.sleep(5)
+                logger.warning(
+                    f"Unexpected websocket error for {stream_name}: {e}. Retrying…",
+                    exc_info=True,
+                )
+            if self._is_running:
+                await asyncio.sleep(self._reconnect_delay)
         
     async def _listen_to_jpeg_stream(self, stream_name: str, stream_type: str):
         """JPEG 스트림을 수신하는 WebSocket 리스너"""
         uri = f"ws://{self.base_url}/ws/{stream_name}"
         frames_received = 0
         last_log_time = time.time()
+        recv_timeout = self._receive_timeout if self._receive_timeout > 0 else None
         
         while self._is_running:
             try:
-                async with websockets.connect(uri, max_size=None) as websocket:
+                ws_kwargs = self._build_ws_connect_kwargs()
+                async with websockets.connect(uri, **ws_kwargs) as websocket:
                     logger.info(f"Connected to {stream_name} JPEG websocket.")
                     while self._is_running:
-                        # WebSocket 수신
-                        message = await websocket.recv()
+                        try:
+                            if recv_timeout:
+                                message = await asyncio.wait_for(websocket.recv(), timeout=recv_timeout)
+                            else:
+                                message = await websocket.recv()
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                f"No data received from {stream_name} websocket for {self._receive_timeout:.1f}s. "
+                                "Reconnecting..."
+                            )
+                            break
                         
                         if isinstance(message, bytes):
                             current_timestamp = time.time()
@@ -161,9 +200,21 @@ class CameraService:
                                 # JPEG 이벤트 발행
                                 payload = DepthJpegReceivedPayload(timestamp=current_timestamp, jpeg_data=message)
                                 await self.event_bus.publish(EventType.DEPTH_JPEG_RECEIVED.value, payload)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Connection attempt to {stream_name} websocket timed out after {self._connect_timeout:.1f}s."
+                )
+            except (ws_exceptions.ConnectionClosed, ws_exceptions.InvalidStatusCode, OSError) as e:
+                logger.warning(f"Websocket connection issue for {stream_name}: {e}. Retrying…")
             except Exception as e:
-                logger.warning(f"Websocket connection error for {stream_name}: {e}. Retrying in 5s...")
-                await asyncio.sleep(5)
+                logger.warning(
+                    f"Unexpected websocket error for {stream_name}: {e}. Retrying…",
+                    exc_info=True,
+                )
+            if self._is_running:
+                await asyncio.sleep(self._reconnect_delay)
     
     async def stop(self):
         self._is_running = False
@@ -171,3 +222,19 @@ class CameraService:
             task.cancel()
         await self.api_client.aclose()
         logger.info("CameraService stopping...")
+
+    def _build_ws_connect_kwargs(self) -> dict:
+        ping_interval = settings.CAMERA_WS_PING_INTERVAL_SECONDS
+        ping_timeout = settings.CAMERA_WS_PING_TIMEOUT_SECONDS
+        kwargs = {
+            "max_size": None,
+            "open_timeout": self._connect_timeout or None,
+            "close_timeout": self._close_timeout or None,
+        }
+        if ping_interval is None or ping_interval <= 0:
+            kwargs["ping_interval"] = None
+        else:
+            kwargs["ping_interval"] = ping_interval
+            if ping_timeout is not None and ping_timeout > 0:
+                kwargs["ping_timeout"] = ping_timeout
+        return kwargs

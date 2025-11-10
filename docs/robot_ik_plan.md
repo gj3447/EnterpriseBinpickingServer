@@ -6,8 +6,8 @@
 - FastAPI API 또는 내부 서비스에서 IK 결과를 활용할 수 있도록 구조화
 
 ## 2. 현재 구조 요약
-- `RobotService`가 URDF를 Pinocchio 모델로 로드하고 `ApplicationStore`에 저장
-- `/api/device/robot/pinocchio`로 모델 정보 확인 가능
+- `RobotService`가 URDF를 Pinocchio 모델로 로드하고 `ApplicationStore`에 저장 (fixed/prismatic 두 variant 동시 관리)
+- `/api/robot/status`, `/api/robot/urdf`로 로딩 상태 및 모델 정보 확인 가능 (쿼리 파라미터 `variant` 지원)
 - 기존 `app/api/v1/endpoints/robot.py`는 urdfpy/XML 기반 응답을 가정하므로 Pinocchio 딕셔너리 구조에 맞춰 업데이트 필요
 - IK 계산 로직은 아직 서비스/엔드포인트로 구현되지 않음
 - 그리퍼 길이 가변성은 URDF 수정 여부에 따라 두 가지 접근이 존재 (URDF는 아직 수정되지 않음)
@@ -15,7 +15,10 @@
 ## 3. 구현 단계
 
 ### 3.1 URDF 조정 (가변 그리퍼)
-1. 대상 URDF 파일 확인 (`settings.ROBOT_URDF_PATH`)
+1. 대상 URDF 파일 준비 (`ROBOT_URDF_PATH_FIXED`, `ROBOT_URDF_PATH_PRISMATIC`)
+   - `.env`에서 `ROBOT_URDF_MODE`로 어느 버전을 로드할지 선택 (`fixed` / `prismatic` / `auto`)
+   - 프리스매틱 URDF를 사용할 경우 `GRIPPER_JOINT_NAME`에 조인트 이름을 지정
+   - 두 경로가 모두 존재하면 서버가 두 variant 를 모두 로드하고 기본 variant 를 결정 (`auto`면 프리스매틱 우선)
 2. 말단 링크(`tool0` 등)에 prismatic joint와 가상 링크(`gripper_slide_link`) 추가
    - `<joint name="gripper_extension_joint" type="prismatic">`
    - `<limit lower="0.0" upper="0.1" velocity="0.2"/>` 등 물리 범위 정의
@@ -44,9 +47,9 @@
 ### 3.3 API/사용자 인터페이스
 1. `app/api/v1/endpoints/robot.py`
    - 기존 GET `/status`, `/urdf` 응답을 Pinocchio 기반 데이터에 맞춰 재구성 (`store.robot.get_urdf_object()` 딕셔너리 대응)
-   - POST `/api/device/robot/ik` 추가
-   - 요청: 목표 pose(회전+위치), 초기 상태, 후보 그리퍼 길이, `mode`(fixed/prismatic/auto), `coordinate_mode` (기준 좌표계 선택)
-   - 응답: joint 벡터, 오차 norm, 사용된 그리퍼 길이, 실제 적용된 mode, 좌표계 정보, 후보별 결과 리스트
+   - POST `/api/robot/ik` 추가
+   - 요청: 목표 pose(회전+위치), 초기 상태, 후보 그리퍼 길이, `mode`(fixed/prismatic/auto), `coordinate_mode` (기준 좌표계 선택), `urdf_variant`(선택)
+   - 응답: joint 벡터, 오차 norm, 사용된 그리퍼 길이, 실제 적용된 mode, 좌표계 정보, 후보별 결과 리스트, `urdf_variant_used`
 2. 검증 및 예외 처리
    - 로봇 모델 미로딩, Pinocchio 미설치, 수렴 실패 등
 3. 필요 시 스웨거 문서 및 README 업데이트

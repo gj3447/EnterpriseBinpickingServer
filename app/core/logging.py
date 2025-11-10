@@ -1,6 +1,8 @@
 import sys
 from loguru import logger
 
+from app.core.config import settings
+
 # --- 로거 설정 ---
 # 기존 로거를 모두 제거하고 새로운 설정을 적용합니다.
 logger.remove()
@@ -11,7 +13,7 @@ logger.remove()
 # colorize: 터미널에서 로그 레벨에 따라 색상을 입힙니다.
 logger.add(
     sys.stderr,
-    level="INFO",
+    level=settings.LOG_LEVEL.upper(),
     format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
            "<level>{level: <8}</level> | "
            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
