@@ -56,6 +56,41 @@ Enterprise Binpicking Server는 다음을 목표로 설계되었습니다.
 - **StreamingService**: WebSocket 구독자 관리(`ConnectionManager`)와 이벤트 연결, 이미지·좌표·포인트클라우드를 브로드캐스트.
 - **API & Views** (`app/api/v1`, `app/static/templates`): REST 엔드포인트와 운영 대시보드 템플릿을 제공.
 
+## 아키텍처 다이어그램
+
+```mermaid
+flowchart TD
+    subgraph Acquisition
+        CAM[카메라 HW]
+        ROBOT[로봇/URDF]
+    end
+
+    subgraph Backend["Enterprise Binpicking Server"]
+        CAM -->|WS/REST| CAMERA_SERVICE[CameraService]
+        CAMERA_SERVICE --> EVENT_BUS[EventBus]
+        EVENT_BUS --> FRAME_SYNC[FrameSyncService]
+        FRAME_SYNC --> SYNC_FRAME[동기화 프레임]
+        SYNC_FRAME --> ARUCO_SERVICE[ArucoService]
+        SYNC_FRAME --> POINTCLOUD_SERVICE[PointcloudService]
+        SYNC_FRAME --> IMAGE_SERVICE[ImageService]
+
+        ARUCO_SERVICE --> STORE[ApplicationStore]
+        POINTCLOUD_SERVICE --> STORE
+        IMAGE_SERVICE --> STORE
+        CAMERA_SERVICE --> STORE
+        ROBOT --> ROBOT_SERVICES[RobotService (Pinocchio/ikpy)]
+        ROBOT_SERVICES --> STORE
+
+        STORE --> STREAMING_SERVICE[StreamingService]
+        STREAMING_SERVICE --> WEB_CLIENTS[Web Clients]
+        STORE --> REST_API[REST API (FastAPI)]
+        STORE --> DASHBOARD[운영 대시보드]
+    end
+
+    WEB_CLIENTS -. WebSocket .-> STREAMING_SERVICE
+    REST_API -. HTTP .-> WEB_CLIENTS
+```
+
 ## 데이터 파이프라인
 
 ```
