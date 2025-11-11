@@ -302,9 +302,20 @@ class ArucoService:
         calib_data = self.store.calibration.get_data()
         if calib_data and self.board is not None:
             try:
-                intrinsics = calib_data.color_intrinsics
-                cam_matrix = np.array([[intrinsics.fx, 0, intrinsics.ppx], [0, intrinsics.fy, intrinsics.ppy], [0, 0, 1]])
-                dist_coeffs = np.array(intrinsics.coeffs)
+                color_intr = calib_data.color_intrinsics
+                depth_intr = calib_data.depth_intrinsics
+                extrinsics = calib_data.depth_to_color_extrinsics
+
+                cam_matrix = np.array(
+                    [
+                        [color_intr.fx, 0, color_intr.ppx],
+                        [0, color_intr.fy, color_intr.ppy],
+                        [0, 0, 1],
+                    ]
+                )
+                dist_coeffs = np.array(color_intr.coeffs)
+                depth_to_color_R = np.array(extrinsics.rotation, dtype=float).reshape(3, 3)
+                depth_to_color_t = np.array(extrinsics.translation, dtype=float)
 
                 # CPU 바운드(검출/포즈 추정)를 워커 스레드로 오프로딩
                 board_pose, board_markers, external_markers = await asyncio.to_thread(
@@ -313,10 +324,10 @@ class ArucoService:
                     depth_image,
                     cam_matrix,
                     dist_coeffs,
-                    intrinsics.fx,
-                    intrinsics.fy,
-                    intrinsics.ppx,
-                    intrinsics.ppy,
+                    color_intr,
+                    depth_intr,
+                    depth_to_color_R,
+                    depth_to_color_t,
                     timestamp,
                 )
             except Exception as e:
@@ -416,16 +427,21 @@ class ArucoService:
         depth_image: np.ndarray,
         cam_matrix: np.ndarray,
         dist_coeffs: np.ndarray,
-        fx: float,
-        fy: float,
-        cx: float,
-        cy: float,
+        color_intr,
+        depth_intr,
+        depth_to_color_R: np.ndarray,
+        depth_to_color_t: np.ndarray,
         timestamp: float = None,
     ) -> Tuple[Optional[Pose], List[DetectedMarker], List[DetectedMarker]]:
         """동기 컨텍스트에서 실행되는 검출/포즈 추정 루틴. to_thread로 호출됩니다."""
         board_pose: Optional[Pose] = None
         board_markers: List[DetectedMarker] = []
         external_markers: List[DetectedMarker] = []
+
+        color_fx = color_intr.fx
+        color_fy = color_intr.fy
+        color_cx = color_intr.ppx
+        color_cy = color_intr.ppy
 
         # 스레드 안전을 위해 로컬 detector 사용 + 그레이스케일로 검출 안정화
         local_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
@@ -437,6 +453,14 @@ class ArucoService:
         if ids is not None and len(ids) > 0:
             # 깊이 단위 정규화(Z16-mm → m 대응)
             depth_m = self._depth_to_meters(depth_image)
+            aligned_depth = self._align_depth_to_color(
+                depth_m,
+                color_image.shape[:2],
+                depth_intr,
+                color_intr,
+                depth_to_color_R,
+                depth_to_color_t,
+            )
 
             # 개별 마커 포즈: 깊이 기반 3D-3D 정합 우선, 부족 시 PnP(IPPE) 폴백
             est_rvecs: List[np.ndarray] = []
@@ -445,7 +469,15 @@ class ArucoService:
                 corner_px = corners[i].reshape(4, 2)
                 # 깊이 기반 추정 시도
                 rvec, tvec = self._estimate_marker_pose_with_depth(
-                    corner_px, depth_m, fx, fy, cx, cy, self.config.marker_size_m
+                    corner_px,
+                    aligned_depth,
+                    color_fx,
+                    color_fy,
+                    color_cx,
+                    color_cy,
+                    self.config.marker_size_m,
+                    cam_matrix,
+                    dist_coeffs,
                 )
                 if rvec is None or tvec is None:
                     # PnP(IPPE) 폴백
@@ -514,12 +546,28 @@ class ArucoService:
             # 보드 포즈: 하이브리드 모드 또는 기존 방식
             if self.config.pose_estimation.hybrid_mode.enabled:
                 board_rvec, board_tvec = self._estimate_board_pose_hybrid(
-                    ids, corners, depth_m, cam_matrix, dist_coeffs, fx, fy, cx, cy
+                    ids,
+                    corners,
+                    aligned_depth,
+                    cam_matrix,
+                    dist_coeffs,
+                    color_fx,
+                    color_fy,
+                    color_cx,
+                    color_cy,
                 )
             else:
                 # 기존 방식: 깊이 기반 3D-3D 정합 우선, 부족 시 PnP 폴백
                 board_rvec, board_tvec = self._estimate_board_pose_with_depth(
-                    ids, corners, depth_m, fx, fy, cx, cy
+                    ids,
+                    corners,
+                    aligned_depth,
+                    cam_matrix,
+                    dist_coeffs,
+                    color_fx,
+                    color_fy,
+                    color_cx,
+                    color_cy,
                 )
                 if board_rvec is None or board_tvec is None:
                     board_rvec, board_tvec = self._estimate_pose_board(corners, ids, cam_matrix, dist_coeffs)
@@ -697,6 +745,56 @@ class ArucoService:
             depth = depth / 1000.0
         return depth
 
+    def _align_depth_to_color(
+        self,
+        depth_m: np.ndarray,
+        color_shape: Tuple[int, int],
+        depth_intr,
+        color_intr,
+        depth_to_color_R: np.ndarray,
+        depth_to_color_t: np.ndarray,
+    ) -> np.ndarray:
+        """깊이 프레임을 컬러 프레임 좌표계로 정렬하여 각 컬러 픽셀의 깊이를 반환합니다."""
+        color_h, color_w = color_shape
+        aligned = np.full((color_h, color_w), np.nan, dtype=np.float32)
+
+        depth_fx = depth_intr.fx
+        depth_fy = depth_intr.fy
+        depth_cx = depth_intr.ppx
+        depth_cy = depth_intr.ppy
+
+        color_fx = color_intr.fx
+        color_fy = color_intr.fy
+        color_cx = color_intr.ppx
+        color_cy = color_intr.ppy
+
+        h_d, w_d = depth_m.shape
+        for v_d in range(h_d):
+            for u_d in range(w_d):
+                z = depth_m[v_d, u_d]
+                if not np.isfinite(z) or z <= 0:
+                    continue
+
+                x_d = (u_d - depth_cx) * z / depth_fx
+                y_d = (v_d - depth_cy) * z / depth_fy
+                point_depth = np.array([x_d, y_d, z], dtype=float)
+                point_color = depth_to_color_R @ point_depth + depth_to_color_t
+
+                z_c = point_color[2]
+                if z_c <= 0:
+                    continue
+
+                u_c = color_fx * point_color[0] / z_c + color_cx
+                v_c = color_fy * point_color[1] / z_c + color_cy
+                u_ci = int(round(u_c))
+                v_ci = int(round(v_c))
+                if 0 <= u_ci < color_w and 0 <= v_ci < color_h:
+                    prev = aligned[v_ci, u_ci]
+                    if not np.isfinite(prev) or z_c < prev:
+                        aligned[v_ci, u_ci] = z_c
+
+        return aligned
+
     def _sample_depth_median(self, depth_m: np.ndarray, u: float, v: float, window: int = 3) -> Optional[float]:
         h, w = depth_m.shape[:2]
         half = window // 2
@@ -724,6 +822,26 @@ class ArucoService:
         x = (u - cx) * z_m / fx
         y = (v - cy) * z_m / fy
         return np.array([x, y, z_m], dtype=np.float32)
+    
+    def _depth_pixel_to_color(
+        self,
+        u: float,
+        v: float,
+        z_m: float,
+        depth_fx: float,
+        depth_fy: float,
+        depth_cx: float,
+        depth_cy: float,
+        depth_to_color_R: np.ndarray,
+        depth_to_color_t: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        if z_m <= 0 or np.isnan(z_m):
+            return None
+        x_d = (u - depth_cx) * z_m / depth_fx
+        y_d = (v - depth_cy) * z_m / depth_fy
+        point_depth = np.array([x_d, y_d, z_m], dtype=float)
+        point_color = depth_to_color_R @ point_depth + depth_to_color_t
+        return point_color.astype(np.float32)
     
     def _sample_marker_interior_depth(self, depth_m: np.ndarray, corners_px: np.ndarray, offset_ratio: float = 0.2) -> Optional[List[float]]:
         """마커 내부 영역에서 깊이를 샘플링하여 엣지 노이즈를 회피합니다."""
@@ -765,11 +883,13 @@ class ArucoService:
         self,
         corner_px: np.ndarray,
         depth_m: np.ndarray,
-        fx: float,
-        fy: float,
-        cx: float,
-        cy: float,
+        color_fx: float,
+        color_fy: float,
+        color_cx: float,
+        color_cy: float,
         marker_size_m: float,
+        cam_matrix: np.ndarray,
+        dist_coeffs: np.ndarray,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """깊이 기반 3D-3D 정합으로 단일 마커 포즈 추정. 실패 시 (None, None)."""
         # 마커 내부 영역에서 깊이 샘플링 (설정에 따라)
@@ -787,7 +907,12 @@ class ArucoService:
         # 코너들을 평균 깊이로 백프로젝션
         observed_points: List[np.ndarray] = []
         for (u, v) in corner_px:
-            observed_points.append(self._backproject(float(u), float(v), avg_depth, fx, fy, cx, cy))
+            z = self._sample_depth_median(depth_m, u, v, window=self.config.depth_sampling.window_size_small)
+            if z is None or z <= 0:
+                z = avg_depth
+            x = (float(u) - color_cx) * z / color_fx
+            y = (float(v) - color_cy) * z / color_fy
+            observed_points.append(np.array([x, y, z], dtype=np.float32))
             
         if len(observed_points) < 4:
             return None, None
@@ -807,6 +932,23 @@ class ArucoService:
             return None, None
         rvec, _ = cv2.Rodrigues(R_cm.astype(np.float32))
         tvec = t_c.reshape(3, 1).astype(np.float32)
+
+        try:
+            rvec_ref = rvec.astype(np.float64)
+            tvec_ref = tvec.astype(np.float64)
+            cv2.solvePnPRefineLM(
+                model_points.astype(np.float32),
+                corner_px.astype(np.float32),
+                cam_matrix,
+                dist_coeffs,
+                rvec_ref,
+                tvec_ref,
+            )
+            rvec = rvec_ref.astype(np.float32)
+            tvec = tvec_ref.astype(np.float32)
+        except AttributeError:
+            pass
+
         return rvec, tvec
 
     def _estimate_pose_single_marker_ippe(
@@ -844,10 +986,12 @@ class ArucoService:
         ids: np.ndarray,
         corners: List[np.ndarray],
         depth_m: np.ndarray,
-        fx: float,
-        fy: float,
-        cx: float,
-        cy: float,
+        cam_matrix: np.ndarray,
+        dist_coeffs: np.ndarray,
+        color_fx: float,
+        color_fy: float,
+        color_cx: float,
+        color_cy: float,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """깊이 기반 3D-3D 정합으로 보드 포즈를 추정합니다. 실패 시 (None, None)."""
         if self.board is None:
@@ -855,6 +999,7 @@ class ArucoService:
 
         model_points_all: List[np.ndarray] = []
         observed_points_all: List[np.ndarray] = []
+        image_points_all: List[np.ndarray] = []
         try:
             board_ids = list(self.board.getIds().flatten())
             board_obj_points = self.board.getObjPoints()
@@ -878,26 +1023,33 @@ class ArucoService:
             else:
                 interior_depths = None
             if interior_depths is None or len(interior_depths) < self.config.depth_sampling.min_valid_samples:
-                # 내부 샘플링 실패 시 기존 방식으로 폴백
+                # 내부 샘플링 실패 시 주변 픽셀에서 깊이 사용
                 for k in range(4):
                     u, v = float(corner_px[k, 0]), float(corner_px[k, 1])
-                    window_size = (self.config.depth_sampling.window_size_small 
-                                   if self.config.marker_size_m <= self.config.depth_sampling.small_marker_threshold_m 
-                                   else self.config.depth_sampling.window_size_large)
+                    window_size = (
+                        self.config.depth_sampling.window_size_small
+                        if self.config.marker_size_m <= self.config.depth_sampling.small_marker_threshold_m
+                        else self.config.depth_sampling.window_size_large
+                    )
                     z = self._sample_depth_median(depth_m, u, v, window=window_size)
                     if z is None or z <= 0:
                         continue
-                    observed = self._backproject(u, v, z, fx, fy, cx, cy)
+                    x = (u - color_cx) * z / color_fx
+                    y = (v - color_cy) * z / color_fy
                     model_points_all.append(model_pts_marker[k])
-                    observed_points_all.append(observed)
+                    observed_points_all.append(np.array([x, y, z], dtype=np.float32))
+                    image_points_all.append(np.array([u, v], dtype=np.float32))
             else:
                 # 내부 포인트들의 평균 깊이로 모든 코너 백프로젝션
                 avg_depth = np.mean(interior_depths)
                 for k in range(4):
                     u, v = float(corner_px[k, 0]), float(corner_px[k, 1])
-                    observed = self._backproject(u, v, avg_depth, fx, fy, cx, cy)
+                    z = avg_depth
+                    x = (u - color_cx) * z / color_fx
+                    y = (v - color_cy) * z / color_fy
                     model_points_all.append(model_pts_marker[k])
-                    observed_points_all.append(observed)
+                    observed_points_all.append(np.array([x, y, z], dtype=np.float32))
+                    image_points_all.append(np.array([u, v], dtype=np.float32))
 
         # 최소 포인트 검사 (안정적인 6DOF 추정을 위해)
         if len(observed_points_all) < self.config.pose_estimation.min_points_for_board:
@@ -915,6 +1067,26 @@ class ArucoService:
             return None, None
         rvec, _ = cv2.Rodrigues(R_cb.astype(np.float32))
         tvec = t_c.reshape(3, 1).astype(np.float32)
+
+        if image_points_all:
+            try:
+                object_points = np.stack(model_points_all, axis=0).astype(np.float32)
+                image_points = np.stack(image_points_all, axis=0).astype(np.float32)
+                rvec_ref = rvec.astype(np.float64)
+                tvec_ref = tvec.astype(np.float64)
+                cv2.solvePnPRefineLM(
+                    object_points,
+                    image_points,
+                    cam_matrix,
+                    dist_coeffs,
+                    rvec_ref,
+                    tvec_ref,
+                )
+                rvec = rvec_ref.astype(np.float32)
+                tvec = tvec_ref.astype(np.float32)
+            except (AttributeError, ValueError):
+                pass
+
         return rvec, tvec
 
     def _estimate_board_pose_hybrid(
@@ -924,10 +1096,10 @@ class ArucoService:
         depth_m: np.ndarray,
         cam_matrix: np.ndarray,
         dist_coeffs: np.ndarray,
-        fx: float,
-        fy: float,
-        cx: float,
-        cy: float,
+        color_fx: float,
+        color_fy: float,
+        color_cx: float,
+        color_cy: float,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """PnP와 깊이 정보를 결합한 하이브리드 보드 포즈 추정"""
         
@@ -935,11 +1107,20 @@ class ArucoService:
         rvec_pnp, tvec_pnp = self._estimate_pose_board(corners, ids, cam_matrix, dist_coeffs)
         if rvec_pnp is None or tvec_pnp is None:
             # PnP 실패 시 깊이 기반으로 폴백
-            return self._estimate_board_pose_with_depth(ids, corners, depth_m, fx, fy, cx, cy)
+            return self._estimate_board_pose_with_depth(
+                ids,
+                corners,
+                depth_m,
+                cam_matrix,
+                dist_coeffs,
+                color_fx,
+                color_fy,
+                color_cx,
+                color_cy,
+            )
         
         # 2단계: 깊이 정보 수집 및 검증
         depth_samples = []
-        board_marker_indices = []
         
         for i, marker_id in enumerate(ids.flatten()):
             if int(marker_id) in self.board_marker_ids:
@@ -951,8 +1132,10 @@ class ArucoService:
                         offset_ratio=self.config.depth_sampling.interior_offset_ratio
                     )
                     if interior_depths and len(interior_depths) >= self.config.depth_sampling.min_valid_samples:
-                        depth_samples.extend(interior_depths)
-                        board_marker_indices.append(i)
+                        center = np.mean(corner_px, axis=0)
+                        for depth_value in interior_depths:
+                            if np.isfinite(depth_value) and depth_value > 0:
+                                depth_samples.append(depth_value)
         
         # 깊이 샘플이 충분하지 않으면 PnP 결과 그대로 반환
         if len(depth_samples) < self.config.pose_estimation.min_points_for_board:

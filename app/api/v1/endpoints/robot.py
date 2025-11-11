@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
+from app.core.logging import logger as app_logger
 from app.dependencies import (
     get_robot_service,
     get_robot_service_ikpy,
-    get_robot_service_pinocchio,
 )
 from app.schemas.robot import (
     PoseTarget,
@@ -17,29 +17,44 @@ from app.services.robot_service import (
     RobotBackend,
     RobotServiceError,
     RobotServiceIkpy,
-    RobotServicePinocchio,
 )
-
-RobotServiceUnion = Union[RobotServicePinocchio, RobotServiceIkpy]
 
 
 router = APIRouter()
 
 
-def _resolve_backend_service(
-    backend: RobotBackend,
-    pinocchio_service: RobotServicePinocchio,
-    ikpy_service: RobotServiceIkpy,
-) -> RobotServiceUnion:
-    if backend == "pinocchio":
-        return pinocchio_service
-    if backend == "ikpy":
-        return ikpy_service
-    raise HTTPException(status_code=400, detail=f"Unsupported backend '{backend}'")
+def _validate_pose_targets_height(request: RobotIkRequest) -> None:
+    """Ensures all pose targets stay above the configured minimum Z height."""
+    min_z = settings.IK_MIN_Z
+    if min_z is None:
+        return
+
+    for idx, pose in enumerate(request.pose_targets):
+        current_z = pose.translation[2]
+        if current_z < min_z:
+            app_logger.warning(
+                "Pose target at index %s lies below IK_MIN_Z (z=%.4f < %.4f); clamping to min height.",
+                idx,
+                current_z,
+                min_z,
+            )
+            # Clamp in-place so downstream services see the adjusted value
+            pose.translation[2] = min_z
+
+
+async def _solve_ik(
+    service: RobotServiceIkpy,
+    request: RobotIkRequest,
+) -> RobotIkResponse:
+    _validate_pose_targets_height(request)
+    try:
+        return await service.solve_ik(request)
+    except RobotServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _build_urdf_response(
-    service: RobotServiceUnion,
+    service: RobotServiceIkpy,
     variant: Optional[str],
 ) -> Dict[str, Any]:
     urdf_object = service.get_robot_object(variant)
@@ -69,16 +84,6 @@ def _build_urdf_response(
     }
 
     return response
-
-
-async def _solve_ik_with_service(
-    service: RobotServiceUnion,
-    request: RobotIkRequest,
-) -> RobotIkResponse:
-    try:
-        return await service.solve_ik(request)
-    except RobotServiceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _build_downward_request(request: RobotIkDownwardRequest) -> RobotIkRequest:
@@ -153,18 +158,19 @@ def _build_downward_request_for_ikpy(request: RobotIkDownwardRequest) -> RobotIk
 
 @router.get("/status", response_model=Dict[str, Any])
 def get_robot_status(
-    robot_service: RobotServiceUnion = Depends(get_robot_service),
+    robot_service: RobotServiceIkpy = Depends(get_robot_service),
 ):
     """설정된 기본 백엔드의 로봇 상태를 조회합니다."""
     return robot_service.get_status()
 
 
 @router.get("/status/pinocchio", response_model=Dict[str, Any])
-def get_robot_status_pinocchio(
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
-):
-    """Pinocchio 백엔드의 로봇 상태를 조회합니다."""
-    return robot_service_pinocchio.get_status()
+def get_robot_status_pinocchio():
+    """Pinocchio backend is disabled."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Pinocchio backend has been disabled. Use ikpy endpoints instead.",
+    )
 
 
 @router.get("/status/ikpy", response_model=Dict[str, Any])
@@ -178,30 +184,21 @@ def get_robot_status_ikpy(
 @router.get("/status/{backend}", response_model=Dict[str, Any])
 def get_robot_status_by_backend(
     backend: RobotBackend,
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
     robot_service_ikpy: RobotServiceIkpy = Depends(get_robot_service_ikpy),
 ):
     """백엔드별 로봇 상태를 조회합니다."""
-    service = _resolve_backend_service(backend, robot_service_pinocchio, robot_service_ikpy)
-    return service.get_status()
+    if backend != "ikpy":
+        raise HTTPException(status_code=400, detail="Only 'ikpy' backend is available.")
+    return robot_service_ikpy.get_status()
 
 
 @router.get("/urdf", response_model=Dict[str, Any])
 def get_robot_urdf_info(
     variant: Optional[str] = Query(None, description="확인할 URDF variant (없으면 기본값)"),
-    robot_service: RobotServiceUnion = Depends(get_robot_service),
+    robot_service: RobotServiceIkpy = Depends(get_robot_service),
 ):
     """기본 백엔드에 대한 URDF 정보를 반환합니다."""
     return _build_urdf_response(robot_service, variant)
-
-
-@router.get("/urdf/pinocchio", response_model=Dict[str, Any])
-def get_robot_urdf_info_pinocchio(
-    variant: Optional[str] = Query(None, description="확인할 URDF variant (없으면 기본값)"),
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
-):
-    """Pinocchio 백엔드에 대한 URDF 정보를 반환합니다."""
-    return _build_urdf_response(robot_service_pinocchio, variant)
 
 
 @router.get("/urdf/ikpy", response_model=Dict[str, Any])
@@ -213,69 +210,22 @@ def get_robot_urdf_info_ikpy(
     return _build_urdf_response(robot_service_ikpy, variant)
 
 
-@router.get("/urdf/{backend}", response_model=Dict[str, Any])
-def get_robot_urdf_info_by_backend(
-    backend: RobotBackend,
-    variant: Optional[str] = Query(None, description="확인할 URDF variant (없으면 기본값)"),
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
-    robot_service_ikpy: RobotServiceIkpy = Depends(get_robot_service_ikpy),
-):
-    """백엔드별 URDF 정보를 반환합니다."""
-    service = _resolve_backend_service(backend, robot_service_pinocchio, robot_service_ikpy)
-    return _build_urdf_response(service, variant)
-
-
 @router.post("/ik", response_model=RobotIkResponse)
 async def solve_robot_ik(
     request: RobotIkRequest,
-    robot_service: RobotServiceUnion = Depends(get_robot_service),
+    robot_service: RobotServiceIkpy = Depends(get_robot_service),
 ):
-    return await _solve_ik_with_service(robot_service, request)
-
-
-@router.post("/ik/pinocchio", response_model=RobotIkResponse)
-async def solve_robot_ik_pinocchio(
-    request: RobotIkRequest,
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
-):
-    return await _solve_ik_with_service(robot_service_pinocchio, request)
-
-
-@router.post("/ik/ikpy", response_model=RobotIkResponse)
-async def solve_robot_ik_ikpy(
-    request: RobotIkRequest,
-    robot_service_ikpy: RobotServiceIkpy = Depends(get_robot_service_ikpy),
-):
-    return await _solve_ik_with_service(robot_service_ikpy, request)
-
-
-@router.post("/ik/{backend}", response_model=RobotIkResponse)
-async def solve_robot_ik_by_backend(
-    backend: RobotBackend,
-    request: RobotIkRequest,
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
-    robot_service_ikpy: RobotServiceIkpy = Depends(get_robot_service_ikpy),
-):
-    service = _resolve_backend_service(backend, robot_service_pinocchio, robot_service_ikpy)
-    return await _solve_ik_with_service(service, request)
+    _validate_pose_targets_height(request)
+    return await robot_service.solve_ik(request)
 
 
 @router.post("/ik/downward", response_model=RobotIkResponse)
 async def solve_robot_ik_downward(
     request: RobotIkDownwardRequest,
-    robot_service: RobotServiceUnion = Depends(get_robot_service),
+    robot_service: RobotServiceIkpy = Depends(get_robot_service),
 ):
     base_request = _build_downward_request(request)
-    return await _solve_ik_with_service(robot_service, base_request)
-
-
-@router.post("/ik/pinocchio/downward", response_model=RobotIkResponse)
-async def solve_robot_ik_downward_pinocchio(
-    request: RobotIkDownwardRequest,
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
-):
-    base_request = _build_downward_request(request)
-    return await _solve_ik_with_service(robot_service_pinocchio, base_request)
+    return await _solve_ik(robot_service, base_request)
 
 
 @router.post("/ik/ikpy/downward", response_model=RobotIkResponse)
@@ -284,19 +234,4 @@ async def solve_robot_ik_downward_ikpy(
     robot_service_ikpy: RobotServiceIkpy = Depends(get_robot_service_ikpy),
 ):
     base_request = _build_downward_request_for_ikpy(request)
-    return await _solve_ik_with_service(robot_service_ikpy, base_request)
-
-
-@router.post("/ik/{backend}/downward", response_model=RobotIkResponse)
-async def solve_robot_ik_downward_by_backend(
-    backend: RobotBackend,
-    request: RobotIkDownwardRequest,
-    robot_service_pinocchio: RobotServicePinocchio = Depends(get_robot_service_pinocchio),
-    robot_service_ikpy: RobotServiceIkpy = Depends(get_robot_service_ikpy),
-):
-    service = _resolve_backend_service(backend, robot_service_pinocchio, robot_service_ikpy)
-    if backend == "ikpy":
-        base_request = _build_downward_request_for_ikpy(request)
-    else:
-        base_request = _build_downward_request(request)
-    return await _solve_ik_with_service(service, base_request)
+    return await _solve_ik(robot_service_ikpy, base_request)

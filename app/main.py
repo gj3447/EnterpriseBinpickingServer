@@ -7,15 +7,14 @@ import traceback
 from app.api.v1.router import api_router
 from app.websockets.v1.router import router as websocket_router
 from app.dependencies import (
-    get_camera_service, 
-    get_aruco_service, 
-    get_streaming_service, 
+    get_camera_service,
+    get_aruco_service,
+    get_streaming_service,
     get_image_service,
     get_frame_sync_service,
     get_robot_service,
-    get_robot_service_pinocchio,
     get_robot_service_ikpy,
-    get_pointcloud_service
+    get_pointcloud_service,
 )
 from app.core.logging import logger
 
@@ -30,11 +29,7 @@ async def lifespan(app: FastAPI):
     aruco_service = get_aruco_service()
     image_service = get_image_service()
     robot_services = []
-    for service in (
-        get_robot_service(),
-        get_robot_service_pinocchio(),
-        get_robot_service_ikpy(),
-    ):
+    for service in (get_robot_service(), get_robot_service_ikpy()):
         if service not in robot_services:
             robot_services.append(service)
     pointcloud_service = get_pointcloud_service()

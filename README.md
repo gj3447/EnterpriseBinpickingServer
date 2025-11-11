@@ -30,7 +30,7 @@ Enterprise Binpicking Server는 다음을 목표로 설계되었습니다.
 
 - 고속 카메라 데이터 수집과 동기화
 - ArUco 보드·마커 기반 3D Pose 추정 및 다중 좌표계 변환
-- Pinocchio / ikpy 기반 로봇 역기구학 계산
+- ikpy 기반 로봇 역기구학 계산 (Pinocchio 지원 중단)
 - 실시간 스트리밍과 시각화 UI 제공
 - 서비스 확장을 고려한 이벤트 주도 아키텍처
 
@@ -39,7 +39,7 @@ Enterprise Binpicking Server는 다음을 목표로 설계되었습니다.
 - **저지연 이미지 스트리밍**: 컬러(BGR)·뎁스(Z16) 스트림을 JPEG 또는 Raw 형태로 수신·배포.
 - **ArUco Pose 추정**: 보드/외부 마커를 감지하고 카메라·보드·로봇 좌표계로 변환.
 - **포인트클라우드 생성**: 동기화된 컬러·뎁스 이미지로 RGB 포인트클라우드를 계산해 스트리밍.
-- **로봇 IK 백엔드**: Pinocchio와 ikpy 두 엔진을 모두 지원하며 변형별 URDF를 관리.
+- **로봇 IK 백엔드**: ikpy 엔진만 지원하며 변형별 URDF를 관리. Pinocchio 백엔드는 비활성화됨.
 - **이벤트 기반 파이프라인**: `EventBus`를 활용한 느슨한 결합, 고성능 비동기 처리.
 - **관측 및 대시보드**: 주요 상태·이미지·변환을 REST, WebSocket, HTML 대시보드로 노출.
 
@@ -52,7 +52,7 @@ Enterprise Binpicking Server는 다음을 목표로 설계되었습니다.
 - **ArucoService**: 깊이 기반 정합 + PnP 하이브리드 방식으로 3D Pose 계산, 좌표계 변환 스냅샷 작성, 이벤트 발행.
 - **ImageService**: JPEG 인코딩/디코딩, 디버그 이미지와 보드 원근 보정 이미지 생성, WebSocket 이벤트 전달.
 - **PointcloudService**: 포인트클라우드 생성 및 다운샘플링, 스트리밍 이벤트 발행.
-- **RobotServicePinocchio / RobotServiceIkpy**: URDF 로딩, 변형(fixed/prismatic) 관리, 역기구학 연산.
+- **RobotServiceIkpy**: URDF 로딩, 변형(fixed/prismatic) 관리, 역기구학 연산.
 - **StreamingService**: WebSocket 구독자 관리(`ConnectionManager`)와 이벤트 연결, 이미지·좌표·포인트클라우드를 브로드캐스트.
 - **API & Views** (`app/api/v1`, `app/static/templates`): REST 엔드포인트와 운영 대시보드 템플릿을 제공.
 
@@ -78,7 +78,7 @@ flowchart TD
         POINTCLOUD_SERVICE --> STORE
         IMAGE_SERVICE --> STORE
         CAMERA_SERVICE --> STORE
-        ROBOT --> ROBOT_SERVICES[RobotService (Pinocchio/ikpy)]
+        ROBOT --> ROBOT_SERVICES[RobotServiceIkpy (ikpy 전용)]
         ROBOT_SERVICES --> STORE
 
         STORE --> STREAMING_SERVICE[StreamingService]
@@ -158,7 +158,7 @@ conda activate binpicking_env
 ### 의존성 확인
 
 - `requirements.txt` : pip 기반 설치가 필요할 때 사용
-- `environment.yml` : 개발 기본 환경 (OpenCV, Pinocchio, ikpy 등 포함)
+- `environment.yml` : 개발 기본 환경 (OpenCV, ikpy 등 포함)
 - `environment2.yml` : 대안 혹은 경량 환경
 
 ## 서버 실행
@@ -200,15 +200,16 @@ python run.py  # 기본 포트: 53000
 - `CAMERA_API_BASE_URL`
 - `COLOR_STREAM_MODE` / `DEPTH_STREAM_MODE` (`jpeg` 또는 `raw`)
 - `ROBOT_URDF_PATH_FIXED`, `ROBOT_URDF_PATH_PRISMATIC`
-- `ROBOT_IK_BACKEND` (`pinocchio` or `ikpy`)
+- `ROBOT_IK_BACKEND` (현재 `ikpy`만 지원)
 - `POINTCLOUD_DOWNSAMPLE_FACTOR`, `MAX_POINTCLOUD_DEPTH_M`
 
 ## 로봇 IK 서비스
 
-- **Pinocchio 백엔드** (`RobotServicePinocchio`): 고정/프리스매틱 URDF를 모두 로드, DLS 기반 반복 IK, 조인트 제한 적용.
-- **ikpy 백엔드** (`RobotServiceIkpy`): 체인 기반 역기구학, 활성 조인트 필터링, workspace 검사.
-- `POST /api/robot/ik`: 기본 백엔드를 이용한 다중 타깃 IK 계산.
-- `POST /api/robot/ik/{backend}`: 특정 엔진 지정.
+- **ikpy 백엔드** (`RobotServiceIkpy`): 체인 기반 역기구학, 활성 조인트 필터링, workspace 검사. (Pinocchio 백엔드는 비활성화됨)
+- `POST /api/robot/ik`: 기본 ikpy 백엔드를 이용한 다중 타깃 IK 계산.
+- `POST /api/robot/ik/ikpy`: 명시적으로 ikpy 엔진 호출.
+- `POST /api/robot/ik/pinocchio`: HTTP 410(Gone) 응답, 더 이상 지원하지 않음.
+- `POST /api/robot/ik/{backend}`: ikpy 외 값 요청 시 410 응답.
 - `POST /api/robot/ik/*/downward`: 그리퍼 다운어프로치 전용 헬퍼.
 - 자세한 파라미터와 예시는 `docs/robot_ik_api.md`, `docs/robot_ik_api_usage.md`, `docs/robot_ik_plan.md` 참고.
 

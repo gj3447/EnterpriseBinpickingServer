@@ -323,8 +323,12 @@ class RobotServiceIkpy:
 
         pose_results: List[IkCandidateResult] = []
         best_result: Optional[IkCandidateResult] = None
+        best_cost: Optional[float] = None
+        initial_active = self._extract_active_positions(initial_full, active_indices)
 
         workspace_margin = 0.05
+
+        min_z = settings.IK_MIN_Z
 
         for pose_index, pose_target in enumerate(ik_request.pose_targets):
             logger.info(
@@ -334,6 +338,8 @@ class RobotServiceIkpy:
                 pose_target.translation,
             )
             target_matrix = self._build_target_matrix(pose_target, transform_matrix)
+            if min_z is not None:
+                target_matrix = self._clamp_target_height(target_matrix, min_z)
             logger.debug(
                 "ikpy IK target built | variant={} pose_index={} translation={}",
                 variant,
@@ -356,9 +362,9 @@ class RobotServiceIkpy:
                 )
 
             for grip_offset in grip_offsets:
-                offset_matrix = np.eye(4)
-                offset_matrix[:3, 3] = np.array([0.0, 0.0, grip_offset], dtype=float)
-                adjusted_target = target_matrix @ offset_matrix
+                adjusted_target = self._apply_grip_offset(target_matrix, grip_offset)
+                if min_z is not None:
+                    adjusted_target = self._clamp_target_height(adjusted_target, min_z)
 
                 seeds = self._generate_initial_seeds(
                     chain,
@@ -429,15 +435,31 @@ class RobotServiceIkpy:
                         upper_limits,
                     )
 
+                    if self._violates_ground(chain, solution, min_z if min_z is not None else -np.inf):
+                        logger.debug(
+                            "ikpy candidate rejected by ground constraint | variant=%s pose_index=%s grip_offset=%.3f seed_index=%s min_z=%.3f",
+                            variant,
+                            pose_index,
+                            grip_offset,
+                            seed_index,
+                            settings.IK_MIN_Z,
+                        )
+                        continue
+
                     error = self._compute_pose_error(chain, solution, adjusted_target)
 
                     active_solution = self._extract_active_positions(solution, active_indices)
+                    joint_delta = float(np.linalg.norm(active_solution - initial_active))
+                    combined_cost = float(
+                        error + settings.IK_JOINT_DISTANCE_WEIGHT * joint_delta
+                    )
 
                     result = IkCandidateResult(
                         pose_index=pose_index,
                         grip_offset=float(grip_offset),
                         error=float(error),
                         iterations=0,
+                        joint_distance=joint_delta,
                         mode_used="offset",
                         coordinate_mode_used=ik_request.coordinate_mode,
                         urdf_variant=variant,
@@ -447,8 +469,19 @@ class RobotServiceIkpy:
                     pose_candidates_found = True
                     pose_results.append(result)
 
-                    if best_result is None or result.error < best_result.error:
+                    logger.debug(
+                        "ikpy IK candidate | variant=%s pose_index=%s grip_offset=%.3f error=%.6f joint_delta=%.6f combined_cost=%.6f",
+                        variant,
+                        pose_index,
+                        grip_offset,
+                        result.error,
+                        joint_delta,
+                        combined_cost,
+                    )
+
+                    if best_result is None or (best_cost is None or combined_cost < best_cost):
                         best_result = result
+                        best_cost = combined_cost
                         logger.debug(
                             "ikpy IK best candidate updated | variant={} pose_index={} grip_offset={:.3f} error={:.6f} joints={}",
                             variant,
@@ -600,6 +633,60 @@ class RobotServiceIkpy:
             upper = upper_limits[local_idx]
             corrected[link_idx] = float(np.clip(corrected[link_idx], lower, upper))
         return corrected
+
+    def _clamp_target_height(self, target_matrix: np.ndarray, min_z: float) -> np.ndarray:
+        clamped = target_matrix.copy()
+        if clamped[2, 3] < min_z:
+            clamped[2, 3] = min_z
+        return clamped
+
+    def _apply_grip_offset(self, target_matrix: np.ndarray, grip_offset: float) -> np.ndarray:
+        if np.isclose(grip_offset, 0.0):
+            return target_matrix
+
+        offset_matrix = np.eye(4, dtype=float)
+        offset_matrix[2, 3] = -grip_offset
+        return target_matrix @ offset_matrix
+
+    def _violates_ground(
+        self,
+        chain: Chain,
+        configuration: np.ndarray,
+        min_z: float,
+    ) -> bool:
+        if min_z is None:
+            return False
+        if min_z is None:
+            return False
+
+        try:
+            transforms = chain.forward_kinematics(configuration, full_kinematics=True)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to compute forward kinematics for ground check: %s", exc)
+            try:
+                transforms = chain.forward_kinematics(configuration)
+            except Exception:
+                return False
+
+        matrices: List[np.ndarray] = []
+        array_like = np.asarray(transforms)
+        if array_like.ndim == 3:
+            matrices = [np.asarray(m) for m in array_like]
+        elif array_like.ndim == 2:
+            matrices = [array_like]
+        else:
+            for transform in transforms:
+                arr = np.asarray(transform)
+                if arr.ndim == 2:
+                    matrices.append(arr)
+
+        for matrix in matrices:
+            if matrix.shape[0] < 3 or matrix.shape[1] < 4:
+                continue
+            z_coord = float(matrix[2, 3])
+            if z_coord < min_z - 1e-6:
+                return True
+        return False
 
     def _compute_pose_error(
         self,

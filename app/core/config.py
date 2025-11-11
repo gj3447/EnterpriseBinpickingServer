@@ -39,8 +39,8 @@ class AppSettings(BaseSettings):
         description="어떤 URDF를 사용할지 결정 (`fixed`, `prismatic`, `auto`)",
     )
     GRIPPER_JOINT_NAME: Optional[str] = Field(default=None, description="프리스매틱 그리퍼 관절 이름 (없으면 None)")
-    ROBOT_IK_BACKEND: Literal["pinocchio", "ikpy"] = Field(
-        "pinocchio",
+    ROBOT_IK_BACKEND: Literal["ikpy"] = Field(
+        "ikpy",
         description="IK 계산에 사용할 라이브러리 백엔드",
     )
     IKPY_END_EFFECTOR_FRAME: str = Field(
@@ -51,6 +51,15 @@ class AppSettings(BaseSettings):
         0.12,
         gt=0.0,
         description="ikpy 백엔드에서 그리퍼 길이를 보정하기 위해 사용할 추가 높이 (미터)",
+    )
+    IK_JOINT_DISTANCE_WEIGHT: float = Field(
+        0.1,
+        ge=0.0,
+        description="ikpy IK에서 관절 변위 비용에 적용할 가중치",
+    )
+    IK_MIN_Z: float = Field(
+        0.0,
+        description="IK 목표 및 결과에서 허용하는 최소 Z 높이 (ground plane)",
     )
     
     # --- Stream Mode Settings ---

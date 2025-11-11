@@ -41,7 +41,7 @@ IKPy 백엔드에서 역기구학을 계산하기 위한 HTTP 엔드포인트 �
 | `target_frame` | 예 | `string` | 역기구학을 계산할 말단 프레임 이름. 기본 `tool` |
 | `translations` | 예 | `List[List[float]]` | 목표 위치 좌표 목록. 각 좌표는 `[x, y, z]` 형태 |
 | `hover_height` | 아니오 | `float` | 목표 지점 위에서 유지할 높이 (m). 0 이상 |
-| `grip_offsets` | 아니오 | `List[float]` | 추가 그리퍼 오프셋(단위 m). 미지정 시 `[0.0]` |
+| `grip_offsets` | 아니오 | `List[float]` | 그리퍼 끝(TCP)과 플랜지 간 거리(단위 m). +Z 방향 기준, 값이 있으면 서버가 그 길이만큼 플랜지를 되돌려(TCP가 목표 위치에 위치하도록) 자동 보정합니다. 미지정 시 `[0.0]` |
 | `mode` | 아니오 | `"auto" \| "fixed" \| "prismatic"` | IK 계산 모드. IKPy는 내부적으로 `fixed` 모드로 동작 |
 | `coordinate_mode` | 아니오 | `"base" \| "custom"` | 좌표계 모드. `custom`이면 `custom_axes` 필수 |
 | `urdf_variant` | 아니오 | `"fixed" \| "prismatic"` | 사용할 URDF 변형. IKPy 경로에서는 자동으로 `fixed`로 강제 |
@@ -193,7 +193,7 @@ IKPy 백엔드에서 역기구학을 계산하기 위한 HTTP 엔드포인트를
 | `translations` | 예 | `List[List[float]]` | 목표 위치 좌표 목록. 각 좌표는 `[x, y, z]` 형태 |
 | `hover_height` | 아니오 | `float` | 목표 지점 위에서 유지할 높이 (m). 0 이상 |
 | `grip_offsets` | 아니오 | `List[float]` | 추가 그리퍼 오프셋(단위 m). 미지정 시 `[0.0]` |
-| `mode` | 아니오 | `"auto" \| "fixed" \| "prismatic"` | IK 계산 모드. IKPy는 내부적으로 `fixed` 모드로 동작 |
+| `mode` | 아니오 | `"auto" \| "fixed"` | 현재 ikpy만 제공하므로 `fixed`만 의미가 있습니다. |
 | `coordinate_mode` | 아니오 | `"base" \| "custom"` | 좌표계 모드. `custom`이면 `custom_axes` 필수 |
 | `urdf_variant` | 아니오 | `"fixed" \| "prismatic"` | 사용할 URDF 변형. IKPy 경로에서는 자동으로 `fixed`로 강제 |
 | `custom_axes` | 아니오 | `{ "up": str, "forward": str }` | 사용자 정의 축. 각 축은 `x, -x, y, -y, z, -z` 중 하나 |
@@ -207,11 +207,13 @@ IKPy 백엔드에서 역기구학을 계산하기 위한 HTTP 엔드포인트를
 
 요청은 `_build_downward_request_for_ikpy()`를 통해 아래와 같이 보정됩니다.
 
-- `hover_height`에 `settings.IKPY_GRIPPER_LENGTH`(기본 0.12m)를 추가.
 - `urdf_variant`를 강제로 `fixed`로 설정.
 - `target_frame`을 `settings.IKPY_END_EFFECTOR_FRAME`(기본 `link_6`)으로 변경.
+- `grip_offsets`에 들어 있는 값(그리퍼 길이 등)을 도구 좌표계의 +Z, -Z 방향으로 자동 처리해, 플랜지 좌표에서 해당 길이만큼 되돌린 뒤 IK를 수행합니다.
 
-즉, 호출자는 플랜지 기준 좌표만 전달하면 되고, 서비스가 자동으로 그리퍼 길이와 프레임 변환을 적용해 줍니다.
+즉, 호출자는 TCP가 도달해야 할 실제 위치 + 그리퍼 길이를 `grip_offsets`에 전달하면 되고, 서버는 전달된 오프셋을 활용해 플랜지 기준 목표를 자동으로 계산합니다.
+
+> **참고**: 현재 Pinocchio 기반 엔드포인트는 비활성화되었습니다. 모든 IK 호출은 `ikpy` 경로(`/api/robot/ik` 또는 `/api/robot/ik/ikpy/...`)를 사용해야 합니다.
 
 
 ## 응답 구조

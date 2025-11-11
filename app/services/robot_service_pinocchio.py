@@ -504,11 +504,13 @@ class RobotService:
                             iterations,
                         )
 
+                    joint_delta = float(np.linalg.norm(q_candidate - initial_q))
                     result = IkCandidateResult(
                         pose_index=pose_index,
                         grip_offset=float(grip_offset),
                         error=current_error,
                         iterations=iterations,
+                        joint_distance=joint_delta,
                         mode_used="prismatic_joint" if use_joint else "offset",
                         coordinate_mode_used=ik_request.coordinate_mode,
                         urdf_variant=variant,

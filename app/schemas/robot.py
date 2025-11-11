@@ -108,6 +108,7 @@ class IkCandidateResult(BaseModel):
     grip_offset: float
     error: float
     iterations: int
+    joint_distance: float
     mode_used: Literal["prismatic_joint", "offset"]
     coordinate_mode_used: Literal["base", "custom"]
     urdf_variant: Literal["fixed", "prismatic"]
