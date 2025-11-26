@@ -1,0 +1,102 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+.pyre/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
+.env
+.env.*
+venv/
+venv.bak/
+ENV/
+env/
+env.bak/
+.venv/
+.virtualenv/
+
+# Tooling / IDE
+.vscode/
+.idea/
+*.iml
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs and temp artifacts
+*.log
+logs/
+log/
+tmp/
+temp/
+
+# Local configuration that should stay private
+app/config/.env
+app/config/robot_position.json
+app/robot_position.json
+
+# Heavy static robot assets
+app/static/urdf/
+legacy/v1/app/static/urdf/
+
+# Database or calibration artifacts
+*.sqlite
+*.sqlite3
+*.db
+
+# Large static assets
+app/static/urdf/
+legacy/v1/app/static/urdf/
+
+
