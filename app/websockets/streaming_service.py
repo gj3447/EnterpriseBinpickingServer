@@ -1,11 +1,9 @@
 import asyncio
-import json
-from typing import Dict, Any
+from typing import Any, Coroutine
 
 from app.core.event_bus import EventBus
 from app.core.logging import logger
 from app.core.event_type import EventType
-from app.services.aruco_service import ArucoService
 from app.stores.application_store import ApplicationStore
 from app.websockets.connection_manager import ConnectionManager
 from app.schemas.events import (
@@ -64,39 +62,69 @@ class StreamingService:
     async def handle_ws_color_image_update(self, event_name: str, payload: WsColorImageUpdatePayload):
         stream_id = "color_jpg"
         if self.manager.has_subscribers(stream_id):
-            await self.manager.broadcast_bytes(stream_id, payload.jpeg_data)
+            self._schedule_broadcast(
+                stream_id,
+                self.manager.broadcast_bytes(stream_id, payload.jpeg_data),
+            )
 
     async def handle_ws_depth_image_update(self, event_name: str, payload: WsDepthImageUpdatePayload):
         stream_id = "depth_jpg"
         if self.manager.has_subscribers(stream_id):
-            await self.manager.broadcast_bytes(stream_id, payload.jpeg_data)
+            self._schedule_broadcast(
+                stream_id,
+                self.manager.broadcast_bytes(stream_id, payload.jpeg_data),
+            )
 
     async def handle_ws_debug_image_update(self, event_name: str, payload: WsDebugImageUpdatePayload):
         stream_id = "aruco_debug_jpg"
         if self.manager.has_subscribers(stream_id):
-            await self.manager.broadcast_bytes(stream_id, payload.jpeg_data)
+            self._schedule_broadcast(
+                stream_id,
+                self.manager.broadcast_bytes(stream_id, payload.jpeg_data),
+            )
 
     async def handle_ws_perspective_image_update(self, event_name: str, payload: WsPerspectiveImageUpdatePayload):
         stream_id = "board_perspective_jpg"
         if self.manager.has_subscribers(stream_id):
-            await self.manager.broadcast_bytes(stream_id, payload.jpeg_data)
+            self._schedule_broadcast(
+                stream_id,
+                self.manager.broadcast_bytes(stream_id, payload.jpeg_data),
+            )
     
     async def handle_ws_pointcloud_update(self, event_name: str, payload: WsPointcloudUpdatePayload):
         stream_id = "pointcloud"
         if self.manager.has_subscribers(stream_id):
             # 포인트클라우드 데이터는 JSON으로 전송
             json_data = payload.model_dump_json()
-            await self.manager.broadcast_text(stream_id, json_data)
+            self._schedule_broadcast(
+                stream_id,
+                self.manager.broadcast_text(stream_id, json_data),
+            )
 
     async def handle_system_transforms_update(self, event_name: str, payload: SystemTransformsUpdatePayload):
         """Broadcasts transform snapshots to subscribers of each frame."""
-        tasks = []
+        scheduled = False
         for snapshot in payload.snapshots:
             stream_id = f"transforms_{snapshot.frame}"
             if self.manager.has_subscribers(stream_id):
-                tasks.append(
-                    self.manager.broadcast_text(stream_id, snapshot.model_dump_json())
+                self._schedule_broadcast(
+                    stream_id,
+                    self.manager.broadcast_text(stream_id, snapshot.model_dump_json()),
                 )
-        if tasks:
-            await asyncio.gather(*tasks)
-            logger.debug("Broadcasted transform snapshots.")
+                scheduled = True
+        if scheduled:
+            logger.debug("Scheduled transform snapshot broadcasts.")
+
+    def _schedule_broadcast(self, stream_id: str, coro: Coroutine[Any, Any, None]) -> None:
+        """브로드캐스트 코루틴을 백그라운드 태스크로 실행하고 예외를 로깅합니다."""
+        task = asyncio.create_task(coro)
+
+        def _callback(finished_task: asyncio.Task, sid: str = stream_id) -> None:
+            try:
+                finished_task.result()
+            except asyncio.CancelledError:
+                logger.debug("Broadcast task cancelled for stream '%s'.", sid)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Broadcast task failed for stream '%s': %s", sid, exc, exc_info=True)
+
+        task.add_done_callback(_callback)

@@ -67,12 +67,17 @@ env.bak/
 .vscode/
 .idea/
 *.iml
+*.swp
+*.swo
+*~
 
 # OS generated files
 .DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+*.lnk
+$RECYCLE.BIN/
 
 # Logs and temp artifacts
 *.log
@@ -81,22 +86,46 @@ log/
 tmp/
 temp/
 
+# ============================================
+# Project-specific ignores
+# ============================================
+
+# Legacy folder (previous version backup - 1400+ files)
+legacy/
+
 # Local configuration that should stay private
 app/config/.env
 app/config/robot_position.json
+
+# Duplicate files (keep only in app/config/)
+app/aruco_place.csv
 app/robot_position.json
 
-# Heavy static robot assets
-app/static/urdf/
-legacy/v1/app/static/urdf/
+# Environment-specific calibration files
+camera_callibration.json
+camera_params.json
 
-# Database or calibration artifacts
+# Internal backup and reports
+backup/
+report/
+
+# Heavy static robot assets (URDF, meshes)
+app/static/urdf/
+
+# Large 3D mesh files (if outside urdf folder)
+*.dae
+*.stl
+*.STL
+
+# Database artifacts
 *.sqlite
 *.sqlite3
 *.db
 
-# Large static assets
-app/static/urdf/
-legacy/v1/app/static/urdf/
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
 
-
+# Cursor IDE
+.cursorignore
+.cursor/

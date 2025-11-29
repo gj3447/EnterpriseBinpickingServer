@@ -120,6 +120,11 @@ class ArucoService:
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         self.board_marker_ids: Set[int] = set()
         self.board = self._create_board_from_config(board_config_path)
+        self._min_process_interval = max(0.0, settings.ARUCO_MIN_PROCESS_INTERVAL_SECONDS)
+        self._last_processed_timestamp = 0.0
+        self._downsample_ratio = getattr(self.config, "downsample_ratio", 1.0)
+        if not (0.0 < self._downsample_ratio <= 1.0):
+            self._downsample_ratio = 1.0
         
         # _create_board_from_config에서 board_marker_ids가 채워진 후 Store에 저장
         self.store.aruco.set_board_marker_ids(self.board_marker_ids)
@@ -152,6 +157,7 @@ class ArucoService:
             dictionary="DICT_4X4_250",
             marker_size_m=0.05,
             board_config_file="aruco_place.csv",
+            downsample_ratio=1.0,
             temporal_filter={
                 "enabled": True,
                 "board_alpha": 0.8,
@@ -401,6 +407,16 @@ class ArucoService:
                     last_log_time = current_time
                 
                 color_image, depth_image, timestamp = snapshot
+                if (
+                    self._min_process_interval > 0.0
+                    and timestamp is not None
+                    and (timestamp - self._last_processed_timestamp) < self._min_process_interval
+                ):
+                    frames_skipped += 1
+                    self._frames_skipped_total += 1
+                    continue
+                if timestamp is not None:
+                    self._last_processed_timestamp = timestamp
                 try:
                     # 처리 시간 측정
                     process_start = asyncio.get_event_loop().time()
@@ -445,12 +461,29 @@ class ArucoService:
 
         # 스레드 안전을 위해 로컬 detector 사용 + 그레이스케일로 검출 안정화
         local_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        detection_image = color_image
+        ratio = self._downsample_ratio
+        if ratio < 0.999:
+            try:
+                detection_image = cv2.resize(
+                    color_image,
+                    None,
+                    fx=ratio,
+                    fy=ratio,
+                    interpolation=cv2.INTER_LINEAR,
+                )
+            except Exception:
+                detection_image = color_image
         try:
-            gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(detection_image, cv2.COLOR_BGR2GRAY)
         except Exception:
-            gray = color_image
+            gray = detection_image
         corners, ids, _ = local_detector.detectMarkers(gray)
         if ids is not None and len(ids) > 0:
+            if ratio < 0.999:
+                scale = 1.0 / ratio
+                for i in range(len(corners)):
+                    corners[i] = corners[i] * scale
             # 깊이 단위 정규화(Z16-mm → m 대응)
             depth_m = self._depth_to_meters(depth_image)
             aligned_depth = self._align_depth_to_color(

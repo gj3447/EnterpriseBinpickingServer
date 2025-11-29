@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Optional, Dict, Any, Tuple
 import numpy as np
 import cv2
@@ -92,12 +93,14 @@ class PointcloudService:
             return
             
         # CPU 바운드 작업(포인트클라우드 생성)을 스레드로 오프로딩
+        start = time.perf_counter()
         pointcloud_data = await asyncio.to_thread(
             self._generate_pointcloud,
             payload.color_image_data,
             payload.depth_image_data,
             calibration
         )
+        duration_ms = (time.perf_counter() - start) * 1000.0
         
         if pointcloud_data is None:
             return
@@ -116,8 +119,13 @@ class PointcloudService:
                 colors=downsampled_colors.tolist() if downsampled_colors is not None else None
             )
             await self.event_bus.publish(EventType.WS_POINTCLOUD_UPDATE.value, ws_payload)
-            
-        logger.debug(f"Successfully generated pointcloud with {len(points)} points.")
+        
+        logger.debug(
+            "Pointcloud generated | points=%d duration=%.1fms downsampled=%s",
+            len(points),
+            duration_ms,
+            "yes" if downsampled_points is not None else "no",
+        )
         
     def _generate_pointcloud(
         self,
@@ -192,6 +200,61 @@ class PointcloudService:
             
     def _undistort_points(self, points: np.ndarray, intrinsics: Intrinsics) -> np.ndarray:
         """왜곡된 3D 포인트를 보정합니다."""
-        # 간단한 왜곡 보정 구현 (Brown-Conrady 모델)
-        # 실제 구현은 더 복잡할 수 있음
-        return points  # TODO: 왜곡 보정 구현
+        if points is None or points.size == 0:
+            return points
+
+        coeffs = list(intrinsics.coeffs or [])
+        if not any(coeffs):
+            return points
+
+        # OpenCV undistortPoints는 최소 4개 계수를 기대하므로 5개까지 패딩
+        while len(coeffs) < 5:
+            coeffs.append(0.0)
+
+        fx = float(intrinsics.fx)
+        fy = float(intrinsics.fy)
+        cx = float(intrinsics.ppx)
+        cy = float(intrinsics.ppy)
+
+        z_values = points[:, 2]
+        valid_mask = z_values > 0
+        if not np.any(valid_mask):
+            return points
+
+        # 현재 3D 포인트를 다시 픽셀 좌표(u, v)로 투영
+        uv = np.zeros((valid_mask.sum(), 1, 2), dtype=np.float32)
+        valid_points = points[valid_mask]
+        normalized_x = valid_points[:, 0] / valid_points[:, 2]
+        normalized_y = valid_points[:, 1] / valid_points[:, 2]
+        uv[:, 0, 0] = normalized_x * fx + cx
+        uv[:, 0, 1] = normalized_y * fy + cy
+
+        camera_matrix = np.array(
+            [
+                [fx, 0.0, cx],
+                [0.0, fy, cy],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        dist_coeffs = np.array(coeffs, dtype=np.float32)
+
+        try:
+            undistorted_uv = cv2.undistortPoints(
+                uv,
+                camera_matrix,
+                dist_coeffs,
+                P=camera_matrix,
+            )
+        except cv2.error:
+            # 실패하면 원본 포인트를 그대로 반환
+            return points
+
+        # 보정된 픽셀 좌표를 다시 3D로 역투영
+        corrected_points = points.copy()
+        corrected_u = undistorted_uv[:, 0, 0]
+        corrected_v = undistorted_uv[:, 0, 1]
+        corrected_points[valid_mask, 0] = (corrected_u - cx) * z_values[valid_mask] / fx
+        corrected_points[valid_mask, 1] = (corrected_v - cy) * z_values[valid_mask] / fy
+
+        return corrected_points

@@ -57,6 +57,7 @@ class ArucoConfig(BaseModel):
     dictionary: str = "DICT_4X4_250"
     marker_size_m: float = Field(0.05, gt=0)
     board_config_file: str = "aruco_place.csv"
+    downsample_ratio: float = Field(1.0, gt=0, le=1.0, description="감지용 프레임 축소 비율")
     temporal_filter: TemporalFilterConfig
     depth_sampling: DepthSamplingConfig
     ransac: RansacConfig

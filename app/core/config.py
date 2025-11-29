@@ -53,13 +53,23 @@ class AppSettings(BaseSettings):
         description="ikpy 백엔드에서 그리퍼 길이를 보정하기 위해 사용할 추가 높이 (미터)",
     )
     IK_JOINT_DISTANCE_WEIGHT: float = Field(
-        0.1,
+        0.2,
         ge=0.0,
         description="ikpy IK에서 관절 변위 비용에 적용할 가중치",
+    )
+    IK_ACCEPTABLE_ERROR: float = Field(
+        5e-3,
+        ge=0.0,
+        description="IK 후보 해의 (포즈 오차 + 관절 이동 가중치) 합이 이 값 이하이면 조기 종료",
     )
     IK_MIN_Z: float = Field(
         0.0,
         description="IK 목표 및 결과에서 허용하는 최소 Z 높이 (ground plane)",
+    )
+    IK_MAX_RANDOM_SEEDS: int = Field(
+        0,
+        ge=0,
+        description="랜덤 perturbation 시드 수 (0이면 랜덤 시드 생성 안 함)",
     )
     
     # --- Stream Mode Settings ---
@@ -75,6 +85,32 @@ class AppSettings(BaseSettings):
     # --- Pointcloud Settings ---
     MAX_POINTCLOUD_DEPTH_M: float = Field(3.0, description="포인트클라우드 생성 시 최대 깊이 (미터 단위)")
     POINTCLOUD_DOWNSAMPLE_FACTOR: int = Field(4, description="포인트클라우드 다운샘플링 팩터 (4 = 4x4 다운샘플링)")
+
+    # --- Board View Rendering ---
+    BOARD_VIEW_UPDATE_MODE: Literal["aruco", "frame", "hybrid"] = Field(
+        "aruco",
+        description="보드 전면/디버그 뷰 업데이트 트리거 선택: 'aruco', 'frame', 'hybrid'.",
+    )
+    BOARD_VIEW_POSE_TTL_SECONDS: float = Field(
+        0.3,
+        ge=0.0,
+        description="보드 Pose 재사용 허용 시간 (초). 초과 시 전면 이미지 렌더를 건너뜁니다.",
+    )
+    ARUCO_MIN_PROCESS_INTERVAL_SECONDS: float = Field(
+        0.0,
+        ge=0.0,
+        description="아루코 연산 간 최소 간격(초). 0이면 모든 프레임 처리",
+    )
+    ARUCO_DOWNSAMPLE_RATIO: float = Field(
+        1.0,
+        ge=0.25,
+        le=1.0,
+        description="아루코 감지용 컬러 프레임 축소 비율 (1.0=원본)",
+    )
+    ARUCO_HYBRID_MODE_ENABLED: bool = Field(
+        True,
+        description="깊이-하이브리드 포즈 추정을 사용할지 여부",
+    )
 
     @computed_field(return_type=str)
     @property

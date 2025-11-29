@@ -274,6 +274,12 @@ class RobotServiceIkpy:
             ik_request.grip_offsets,
             "yes" if ik_request.initial_joint_positions is not None else "no",
         )
+        if ik_request.initial_joint_positions is not None:
+            logger.info(
+                "ikpy IK initial joints | variant=%s values=%s",
+                variant,
+                ik_request.initial_joint_positions,
+            )
 
         robot_object = self.store.robot.get_urdf_object(variant)
         if not robot_object or robot_object.get("library") != "ikpy":
@@ -330,7 +336,11 @@ class RobotServiceIkpy:
 
         min_z = settings.IK_MIN_Z
 
+        early_exit = False
+
         for pose_index, pose_target in enumerate(ik_request.pose_targets):
+            if early_exit:
+                break
             logger.info(
                 "ikpy IK evaluating pose | variant={} pose_index={} raw_translation={}",
                 variant,
@@ -362,6 +372,8 @@ class RobotServiceIkpy:
                 )
 
             for grip_offset in grip_offsets:
+                if early_exit:
+                    break
                 adjusted_target = self._apply_grip_offset(target_matrix, grip_offset)
                 if min_z is not None:
                     adjusted_target = self._clamp_target_height(adjusted_target, min_z)
@@ -396,6 +408,8 @@ class RobotServiceIkpy:
                     continue
 
                 for seed_index, seed in enumerate(seeds):
+                    if early_exit:
+                        break
                     pose_attempted = True
                     try:
                         solution = chain.inverse_kinematics(
@@ -490,6 +504,18 @@ class RobotServiceIkpy:
                             result.error,
                             result.joint_positions,
                         )
+
+                    if combined_cost <= settings.IK_ACCEPTABLE_ERROR:
+                        logger.info(
+                            "ikpy IK early exit | variant=%s pose_index=%s grip_offset=%.3f error=%.6f threshold=%.6f",
+                            variant,
+                            pose_index,
+                            grip_offset,
+                            combined_cost,
+                            settings.IK_ACCEPTABLE_ERROR,
+                        )
+                        early_exit = True
+                        break
 
                 if not pose_attempted:
                     logger.warning(
@@ -601,17 +627,19 @@ class RobotServiceIkpy:
 
         add_seed(neutral.copy())
 
-        rng_seed = hash((variant, pose_index, float(grip_offset))) & 0xFFFFFFFFFFFF
-        rng = np.random.default_rng(rng_seed)
-
-        base_pool = seeds[:2]
-        for base in base_pool:
-            try:
-                perturb = rng.normal(scale=0.05, size=len(chain.links))
-                noisy = base + perturb
-                add_seed(noisy)
-            except Exception:
-                continue
+        max_random = max(0, settings.IK_MAX_RANDOM_SEEDS)
+        if max_random > 0:
+            rng_seed = hash((variant, pose_index, float(grip_offset))) & 0xFFFFFFFFFFFF
+            rng = np.random.default_rng(rng_seed)
+            for _ in range(max_random):
+                try:
+                    base_idx = rng.integers(len(seeds))
+                    base = seeds[base_idx]
+                    perturb = rng.normal(scale=0.05, size=len(chain.links))
+                    noisy = base + perturb
+                    add_seed(noisy)
+                except Exception:
+                    continue
 
         return seeds
 

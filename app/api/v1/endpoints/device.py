@@ -7,7 +7,7 @@ from app.dependencies import get_store
 router = APIRouter()
 
 @router.get(
-    "camera/status",
+    "/camera/status",
     summary="Get current device status",
     description="Returns the latest device status information (device info, active stream configuration) fetched from the camera API."
 )

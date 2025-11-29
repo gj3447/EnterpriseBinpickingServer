@@ -202,6 +202,8 @@ python run.py  # 기본 포트: 53000
 - `ROBOT_URDF_PATH_FIXED`, `ROBOT_URDF_PATH_PRISMATIC`
 - `ROBOT_IK_BACKEND` (현재 `ikpy`만 지원)
 - `POINTCLOUD_DOWNSAMPLE_FACTOR`, `MAX_POINTCLOUD_DEPTH_M`
+- `BOARD_VIEW_UPDATE_MODE` (`aruco`, `frame`, `hybrid` 중 선택하여 전면/디버그 뷰 업데이트 주기 결정)
+- `BOARD_VIEW_POSE_TTL_SECONDS` (보드 Pose 재사용 허용 시간)
 
 ## 로봇 IK 서비스
 

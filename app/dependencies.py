@@ -139,6 +139,12 @@ logger.info(
 )
 _robot_pose = _load_robot_pose_from_config(ROBOT_POSITION_CONFIG_PATH)
 _aruco_config = _load_aruco_config(ARUCO_CONFIG_PATH)
+# 설정 기반 오버라이드 적용
+if _aruco_config:
+    ratio = max(0.25, min(1.0, settings.ARUCO_DOWNSAMPLE_RATIO))
+    _aruco_config.downsample_ratio = ratio
+    if not settings.ARUCO_HYBRID_MODE_ENABLED:
+        _aruco_config.pose_estimation.hybrid_mode.enabled = False
 # board_config_path를 config 디렉토리 기준으로 구성
 _board_config_path = f"app/config/{_aruco_config.board_config_file}" if _aruco_config else "app/config/aruco_place.csv"
 _aruco_service = ArucoService(

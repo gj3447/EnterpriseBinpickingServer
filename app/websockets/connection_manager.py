@@ -14,6 +14,7 @@ class ConnectionManager:
     def __init__(self):
         self.subscriptions: Dict[str, Set[WebSocket]] = {}
         self._lock = asyncio.Lock()
+        self._send_timeout_seconds = 0.25
 
     async def connect(self, stream_id: str, websocket: WebSocket):
         """클라이언트를 특정 스트림의 구독자로 추가합니다."""
@@ -39,20 +40,25 @@ class ConnectionManager:
 
     async def broadcast_bytes(self, stream_id: str, data: bytes):
         """특정 스트림의 모든 구독자에게 bytes 데이터를 전송합니다."""
-        async with self._lock:
-            if stream_id in self.subscriptions:
-                # 브로드캐스팅 중 연결이 끊어지는 경우를 대비해 구독자 목록 복사
-                subscribers = list(self.subscriptions[stream_id])
-                tasks = [self._send_bytes_safely(websocket, data) for websocket in subscribers]
-                await asyncio.gather(*tasks)
+        subscribers = await self._get_subscribers_snapshot(stream_id)
+        if not subscribers:
+            return
+        tasks = [self._send_bytes_safely(websocket, data) for websocket in subscribers]
+        await asyncio.gather(*tasks)
 
     async def broadcast_text(self, stream_id: str, data: str):
         """특정 스트림의 모든 구독자에게 text 데이터를 전송합니다."""
+        subscribers = await self._get_subscribers_snapshot(stream_id)
+        if not subscribers:
+            return
+        tasks = [self._send_text_safely(websocket, data) for websocket in subscribers]
+        await asyncio.gather(*tasks)
+
+    async def _get_subscribers_snapshot(self, stream_id: str) -> list[WebSocket]:
+        """락을 짧게 잡고 구독자 목록을 복사해 반환합니다."""
         async with self._lock:
-            if stream_id in self.subscriptions:
-                subscribers = list(self.subscriptions[stream_id])
-                tasks = [self._send_text_safely(websocket, data) for websocket in subscribers]
-                await asyncio.gather(*tasks)
+            subscribers = self.subscriptions.get(stream_id)
+            return list(subscribers) if subscribers else []
 
     async def _send_bytes_safely(self, websocket: WebSocket, data: bytes):
         """
@@ -60,7 +66,14 @@ class ConnectionManager:
         """
         if websocket.client_state == WebSocketState.CONNECTED:
             try:
-                await websocket.send_bytes(data)
+                await asyncio.wait_for(websocket.send_bytes(data), timeout=self._send_timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Timed out sending bytes to client %s after %.2fs. Disconnecting.",
+                    websocket.client,
+                    self._send_timeout_seconds,
+                )
+                await self._handle_failed_connection(websocket)
             except Exception as e:
                 logger.warning(f"Failed to send bytes to client {websocket.client}: {e}. Disconnecting.")
                 await self._handle_failed_connection(websocket)
@@ -71,7 +84,14 @@ class ConnectionManager:
         """
         if websocket.client_state == WebSocketState.CONNECTED:
             try:
-                await websocket.send_text(data)
+                await asyncio.wait_for(websocket.send_text(data), timeout=self._send_timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Timed out sending text to client %s after %.2fs. Disconnecting.",
+                    websocket.client,
+                    self._send_timeout_seconds,
+                )
+                await self._handle_failed_connection(websocket)
             except Exception as e:
                 logger.warning(f"Failed to send text to client {websocket.client}: {e}. Disconnecting.")
                 await self._handle_failed_connection(websocket)

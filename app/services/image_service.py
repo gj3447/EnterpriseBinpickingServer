@@ -1,5 +1,6 @@
 import asyncio
-from typing import Optional, Dict, Any, Tuple
+import time
+from typing import Optional, Dict, Any, Tuple, List
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -30,6 +31,27 @@ class ImageService:
         # 최신 프레임만 처리하기 위한 간단한 coalesce 버퍼와 처리 상태
         self._latest_images: Dict[str, Optional[Tuple[np.ndarray, float]]] = {"color_raw": None, "depth_raw": None}
         self._processing_streams: set[str] = set()
+        self._latest_color_frame: Optional[Tuple[np.ndarray, float]] = None
+        self._latest_board_pose: Optional[Pose] = None
+        self._latest_board_markers: List[DetectedMarker] = []
+        self._latest_external_markers: List[DetectedMarker] = []
+        self._last_pose_timestamp: Optional[float] = None
+        self._board_render_task: Optional[asyncio.Task] = None
+        self._board_render_requested = False
+        self._board_view_mode = settings.BOARD_VIEW_UPDATE_MODE.lower()
+        if self._board_view_mode not in {"aruco", "frame", "hybrid"}:
+            logger.warning(
+                "Unknown BOARD_VIEW_UPDATE_MODE '%s'. Falling back to 'aruco'.",
+                settings.BOARD_VIEW_UPDATE_MODE,
+            )
+            self._board_view_mode = "aruco"
+        self._pose_ttl_seconds = max(0.0, settings.BOARD_VIEW_POSE_TTL_SECONDS)
+        self._passthrough_color_jpeg = settings.COLOR_STREAM_MODE == "jpeg"
+        self._passthrough_depth_jpeg = settings.DEPTH_STREAM_MODE == "jpeg"
+        self._latest_color_jpeg: Optional[ColorJpegReceivedPayload] = None
+        self._latest_depth_jpeg: Optional[DepthJpegReceivedPayload] = None
+        self._color_decode_task: Optional[asyncio.Task] = None
+        self._depth_decode_task: Optional[asyncio.Task] = None
 
     async def start(self):
         """서비스를 시작하고 이벤트 구독을 등록합니다."""
@@ -67,6 +89,15 @@ class ImageService:
             await self.event_bus.unsubscribe(EventType.DEPTH_JPEG_RECEIVED.value, self.handle_depth_jpeg)
             
         await self.event_bus.unsubscribe(EventType.ARUCO_UPDATE.value, self.handle_aruco_update)
+        if self._board_render_task:
+            self._board_render_task.cancel()
+            try:
+                await self._board_render_task
+            except asyncio.CancelledError:
+                pass
+            self._board_render_task = None
+        self._board_render_requested = False
+        await self._cancel_decode_tasks()
         logger.info("ImageService stopped and unsubscribed from events.")
 
     async def handle_color_image(self, event_name: str, payload: ColorImageReceivedPayload):
@@ -74,7 +105,10 @@ class ImageService:
         try:
             # 최신 프레임만 유지하고 처리 루프가 없으면 시작
             self._latest_images["color_raw"] = (payload.image_data, payload.timestamp)
-            if "color_raw" not in self._processing_streams:
+            self._latest_color_frame = (payload.image_data, payload.timestamp)
+            if self._board_view_mode in {"frame", "hybrid"}:
+                self._schedule_board_render()
+            if not self._passthrough_color_jpeg and "color_raw" not in self._processing_streams:
                 self._processing_streams.add("color_raw")
                 asyncio.create_task(self._process_image_loop("color_raw"))
         except Exception as e:
@@ -85,7 +119,7 @@ class ImageService:
         try:
             # 최신 프레임만 유지하고 처리 루프가 없으면 시작
             self._latest_images["depth_raw"] = (payload.image_data, payload.timestamp)
-            if "depth_raw" not in self._processing_streams:
+            if not self._passthrough_depth_jpeg and "depth_raw" not in self._processing_streams:
                 self._processing_streams.add("depth_raw")
                 asyncio.create_task(self._process_image_loop("depth_raw"))
         except Exception as e:
@@ -93,7 +127,9 @@ class ImageService:
             
     async def _process_and_publish_jpeg(self, image_data: np.ndarray, timestamp: float, stream_id: str):
         # CPU 바운드(JPEG 인코딩)를 이벤트 루프 밖으로 오프로딩
+        encode_start = time.perf_counter()
         jpeg_data = await asyncio.to_thread(self.get_image_as_jpeg, image_data, stream_id)
+        encode_duration_ms = (time.perf_counter() - encode_start) * 1000.0
         if not jpeg_data:
             return
 
@@ -107,7 +143,12 @@ class ImageService:
             payload = WsDepthImageUpdatePayload(timestamp=timestamp, jpeg_data=jpeg_data)
             await self.event_bus.publish(EventType.WS_DEPTH_IMAGE_UPDATE.value, payload)
         
-        logger.debug(f"Successfully converted and stored {stream_id} as JPEG.")
+        if encode_duration_ms > 30:
+            logger.debug(
+                f"JPEG encode slow path | stream={stream_id} duration={encode_duration_ms:.1f}ms"
+            )
+        else:
+            logger.trace(f"JPEG encode | stream={stream_id} duration={encode_duration_ms:.1f}ms")
 
     async def _process_image_loop(self, stream_id: str):
         """각 스트림별 최신 프레임만 처리하는 루프."""
@@ -133,28 +174,22 @@ class ImageService:
     async def handle_color_jpeg(self, event_name: str, payload: ColorJpegReceivedPayload):
         """COLOR_JPEG_RECEIVED 이벤트를 처리하여 BGR로 디코딩합니다."""
         try:
-            # JPEG를 BGR로 디코딩 (CPU 바운드 작업이므로 스레드로 오프로딩)
-            bgr_image = await asyncio.to_thread(self._decode_jpeg_to_bgr, payload.jpeg_data)
-            if bgr_image is not None:
-                # Store에 raw 이미지 저장
-                self.store.camera_raw.update_color_image(bgr_image, payload.timestamp)
-                # Raw 이미지 이벤트 발행 (ArUco 등이 처리할 수 있도록)
-                raw_payload = ColorImageReceivedPayload(timestamp=payload.timestamp, image_data=bgr_image)
-                await self.event_bus.publish(EventType.COLOR_IMAGE_RECEIVED.value, raw_payload)
+            self.store.images.update_color_jpeg(payload.jpeg_data, payload.timestamp)
+            ws_payload = WsColorImageUpdatePayload(timestamp=payload.timestamp, jpeg_data=payload.jpeg_data)
+            await self.event_bus.publish(EventType.WS_COLOR_IMAGE_UPDATE.value, ws_payload)
+            self._latest_color_jpeg = payload
+            self._ensure_color_decode_task()
         except Exception as e:
             logger.error(f"Error in handle_color_jpeg: {e}", exc_info=True)
     
     async def handle_depth_jpeg(self, event_name: str, payload: DepthJpegReceivedPayload):
         """DEPTH_JPEG_RECEIVED 이벤트를 처리하여 Z16으로 디코딩합니다."""
         try:
-            # JPEG를 Z16으로 디코딩 (CPU 바운드 작업이므로 스레드로 오프로딩)
-            z16_image = await asyncio.to_thread(self._decode_jpeg_to_z16, payload.jpeg_data)
-            if z16_image is not None:
-                # Store에 raw 이미지 저장
-                self.store.camera_raw.update_depth_image(z16_image, payload.timestamp)
-                # Raw 이미지 이벤트 발행 (ArUco 등이 처리할 수 있도록)
-                raw_payload = DepthImageReceivedPayload(timestamp=payload.timestamp, image_data=z16_image)
-                await self.event_bus.publish(EventType.DEPTH_IMAGE_RECEIVED.value, raw_payload)
+            self.store.images.update_depth_jpeg(payload.jpeg_data, payload.timestamp)
+            ws_payload = WsDepthImageUpdatePayload(timestamp=payload.timestamp, jpeg_data=payload.jpeg_data)
+            await self.event_bus.publish(EventType.WS_DEPTH_IMAGE_UPDATE.value, ws_payload)
+            self._latest_depth_jpeg = payload
+            self._ensure_depth_decode_task()
         except Exception as e:
             logger.error(f"Error in handle_depth_jpeg: {e}", exc_info=True)
     
@@ -188,38 +223,109 @@ class ImageService:
     async def handle_aruco_update(self, event_name: str, payload: ArucoUpdatePayload):
         """ARUCO_UPDATE 이벤트를 처리하여 디버그 및 원근 보정 이미지를 생성하고 저장합니다."""
         try:
-            calibration = self.store.calibration.get_data()
-            image = payload.source_image_data
-
-            if calibration is None:
-                logger.warning("Missing calibration data for generating images from aruco update.")
-                return
-
-            # 1. ArUco 디버그 이미지 생성 및 발행 준비 (CPU 바운드 오프로딩)
-            # 스토어 접근은 이벤트 루프 스레드에서 수행 후 값만 워커 스레드로 전달
-            robot_pose_board = self.store.aruco.get_robot_pose_on_board()
-            debug_image_jpeg = await asyncio.to_thread(
-                self.get_aruco_debug_image_as_jpeg, image, payload, calibration, robot_pose_board
-            )
-            if debug_image_jpeg:
-                self.store.images.update_aruco_debug_image(debug_image_jpeg, payload.timestamp)
-                ws_payload = WsDebugImageUpdatePayload(timestamp=payload.timestamp, jpeg_data=debug_image_jpeg)
-                await self.event_bus.publish(EventType.WS_DEBUG_IMAGE_UPDATE.value, ws_payload)
-                logger.debug("Successfully generated and stored 'aruco_debug_jpg'.")
-
-            # 2. ArUco 보드 기준 원근 보정 이미지 생성 및 발행 준비 (CPU 바운드 오프로딩)
-            if payload.board_pose:
-                perspective_jpeg = await asyncio.to_thread(self.get_board_perspective_corrected_image_as_jpeg, image, payload.board_pose, calibration)
-                if perspective_jpeg:
-                    self.store.images.update_board_perspective_image(perspective_jpeg, payload.timestamp)
-                    ws_payload = WsPerspectiveImageUpdatePayload(timestamp=payload.timestamp, jpeg_data=perspective_jpeg)
-                    await self.event_bus.publish(EventType.WS_PERSPECTIVE_IMAGE_UPDATE.value, ws_payload)
-                    logger.debug("Successfully generated and stored 'board_perspective_jpg'.")
-
-            # 3. 모든 준비된 이벤트를 한 번에 발행
-
+            self._update_board_state_from_payload(payload)
+            self._schedule_board_render()
         except Exception as e:
             logger.error(f"Error generating or storing images from aruco update: {e}", exc_info=True)
+
+    def _update_board_state_from_payload(self, payload: ArucoUpdatePayload) -> None:
+        """아루코 이벤트 결과를 로컬 캐시로 반영합니다."""
+        self._latest_color_frame = (payload.source_image_data, payload.timestamp)
+        if payload.board_pose is not None:
+            self._latest_board_pose = payload.board_pose
+            self._last_pose_timestamp = payload.timestamp
+            self._latest_board_markers = list(payload.board_markers)
+        self._latest_external_markers = list(payload.external_markers)
+
+    def _schedule_board_render(self) -> None:
+        """보드 전면/디버그 이미지를 렌더하도록 백그라운드 태스크를 예약합니다."""
+        if not self._should_render_board():
+            return
+        self._board_render_requested = True
+        if self._board_render_task is None or self._board_render_task.done():
+            self._board_render_task = asyncio.create_task(self._board_render_loop())
+
+    async def _board_render_loop(self) -> None:
+        """큐에 쌓인 렌더 요청을 순차적으로 처리합니다."""
+        try:
+            while True:
+                if not self._board_render_requested:
+                    break
+                self._board_render_requested = False
+                await self._render_board_views_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover
+            logger.error("Unexpected error while rendering board views: %s", exc, exc_info=True)
+        finally:
+            self._board_render_task = None
+
+    async def _render_board_views_once(self) -> None:
+        snapshot = self._get_board_snapshot()
+        if snapshot is None:
+            return
+
+        color_image, timestamp, board_pose, board_markers, external_markers = snapshot
+        calibration = self.store.calibration.get_data()
+        if calibration is None:
+            logger.warning("Missing calibration data for board view rendering.")
+            return
+
+        robot_pose_board = self.store.aruco.get_robot_pose_on_board()
+        aruco_payload = ArucoUpdatePayload(
+            timestamp=timestamp,
+            source_image_data=color_image,
+            board_pose=board_pose,
+            board_markers=board_markers,
+            external_markers=external_markers,
+        )
+
+        debug_image_jpeg = await asyncio.to_thread(
+            self.get_aruco_debug_image_as_jpeg,
+            color_image,
+            aruco_payload,
+            calibration,
+            robot_pose_board,
+        )
+        if debug_image_jpeg:
+            self.store.images.update_aruco_debug_image(debug_image_jpeg, timestamp)
+            ws_payload = WsDebugImageUpdatePayload(timestamp=timestamp, jpeg_data=debug_image_jpeg)
+            await self.event_bus.publish(EventType.WS_DEBUG_IMAGE_UPDATE.value, ws_payload)
+            logger.debug("Successfully generated and stored 'aruco_debug_jpg'.")
+
+        if board_pose:
+            perspective_jpeg = await asyncio.to_thread(
+                self.get_board_perspective_corrected_image_as_jpeg,
+                color_image,
+                board_pose,
+                calibration,
+            )
+            if perspective_jpeg:
+                self.store.images.update_board_perspective_image(perspective_jpeg, timestamp)
+                ws_payload = WsPerspectiveImageUpdatePayload(timestamp=timestamp, jpeg_data=perspective_jpeg)
+                await self.event_bus.publish(EventType.WS_PERSPECTIVE_IMAGE_UPDATE.value, ws_payload)
+                logger.debug("Successfully generated and stored 'board_perspective_jpg'.")
+
+    def _get_board_snapshot(self) -> Optional[Tuple[np.ndarray, float, Pose, List[DetectedMarker], List[DetectedMarker]]]:
+        if not self._should_render_board():
+            return None
+        color_frame = self._latest_color_frame
+        board_pose = self._latest_board_pose
+        if color_frame is None or board_pose is None:
+            return None
+        color_image, timestamp = color_frame
+        board_markers = list(self._latest_board_markers)
+        external_markers = list(self._latest_external_markers)
+        return color_image, timestamp, board_pose, board_markers, external_markers
+
+    def _should_render_board(self) -> bool:
+        if self._latest_color_frame is None:
+            return False
+        if self._latest_board_pose is None:
+            return False
+        if self._last_pose_timestamp is None:
+            return False
+        return True
 
 
     def get_raw_image(self, image: np.ndarray) -> np.ndarray:
@@ -375,3 +481,71 @@ class ImageService:
             pt = (int(robot_pos_2d[0][0][0]), int(robot_pos_2d[0][0][1]))
             cv2.circle(image, pt, 10, (0, 0, 255), -1)
             cv2.putText(image, "Robot", (pt[0] + 15, pt[1] + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    def _ensure_color_decode_task(self) -> None:
+        if self._color_decode_task and not self._color_decode_task.done():
+            return
+        self._color_decode_task = asyncio.create_task(self._decode_color_jpeg_worker())
+        self._color_decode_task.add_done_callback(self._make_task_logger("color"))
+
+    def _ensure_depth_decode_task(self) -> None:
+        if self._depth_decode_task and not self._depth_decode_task.done():
+            return
+        self._depth_decode_task = asyncio.create_task(self._decode_depth_jpeg_worker())
+        self._depth_decode_task.add_done_callback(self._make_task_logger("depth"))
+
+    def _make_task_logger(self, stream: str):
+        def _logger(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                logger.debug("JPEG decode task cancelled | stream=%s", stream)
+            except Exception as exc:
+                logger.error("JPEG decode task failed | stream=%s error=%s", stream, exc, exc_info=True)
+        return _logger
+
+    async def _decode_color_jpeg_worker(self) -> None:
+        try:
+            while self._is_running:
+                payload = self._latest_color_jpeg
+                if payload is None:
+                    break
+                self._latest_color_jpeg = None
+                bgr_image = await asyncio.to_thread(self._decode_jpeg_to_bgr, payload.jpeg_data)
+                if bgr_image is None:
+                    continue
+                self.store.camera_raw.update_color_image(bgr_image, payload.timestamp)
+                raw_payload = ColorImageReceivedPayload(timestamp=payload.timestamp, image_data=bgr_image)
+                await self.event_bus.publish(EventType.COLOR_IMAGE_RECEIVED.value, raw_payload)
+        finally:
+            self._color_decode_task = None
+
+    async def _decode_depth_jpeg_worker(self) -> None:
+        try:
+            while self._is_running:
+                payload = self._latest_depth_jpeg
+                if payload is None:
+                    break
+                self._latest_depth_jpeg = None
+                z16_image = await asyncio.to_thread(self._decode_jpeg_to_z16, payload.jpeg_data)
+                if z16_image is None:
+                    continue
+                self.store.camera_raw.update_depth_image(z16_image, payload.timestamp)
+                raw_payload = DepthImageReceivedPayload(timestamp=payload.timestamp, image_data=z16_image)
+                await self.event_bus.publish(EventType.DEPTH_IMAGE_RECEIVED.value, raw_payload)
+        finally:
+            self._depth_decode_task = None
+
+    async def _cancel_decode_tasks(self) -> None:
+        tasks = [self._color_decode_task, self._depth_decode_task]
+        for task in tasks:
+            if task and not task.done():
+                task.cancel()
+        for task in tasks:
+            if task:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._color_decode_task = None
+        self._depth_decode_task = None

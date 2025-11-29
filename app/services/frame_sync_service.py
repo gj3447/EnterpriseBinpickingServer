@@ -79,6 +79,11 @@ class FrameSyncService:
             return None
 
         if abs(self._latest_color.timestamp - self._latest_depth.timestamp) <= self._tolerance_sec:
+            delta_ms = abs(self._latest_color.timestamp - self._latest_depth.timestamp) * 1000.0
+            logger.debug(
+                f"FrameSync matched pair | delta={delta_ms:.1f}ms "
+                f"tolerance={self._tolerance_sec * 1000.0:.1f}ms"
+            )
             # Pair found, create the payload using the latest of the two timestamps
             sync_payload = SyncFrameReadyPayload(
                 timestamp=max(self._latest_color.timestamp, self._latest_depth.timestamp),
