@@ -264,3 +264,11 @@ python run.py  # 기본 포트: 53000
 ---
 
 지속적인 개선이나 신규 기능 제안은 문서(`docs/`, `backup/`)에 정리된 계획과 일정을 참고하세요. Issue나 추가 질문이 있다면 언제든지 환영합니다.
+
+## License
+
+**MetaHumotonic License 1.2** — [LICENSE](LICENSE); [scope, prior grants and third-party notices](LICENSE-NOTICE.md).
+
+지정한 하드웨어의 접근권한과 전체 관리 권한을 합의한 명세서에 따라 공유하고, **CHU의 일부가 된다**는 참여 원칙을 적용합니다. 실제 접근에는 별도 승인이 필요합니다.
+
+Source-available; not OSI-approved. Existing grants and separately licensed material remain valid.
